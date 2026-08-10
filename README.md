@@ -1,6 +1,6 @@
-# Voice Agent Starter — Powered by Murf Falcon
+# BharatPay Pooja — Voice Agent Starter (Day 5)
 
-Build a production voice AI agent in 5 minutes. Powered by the fastest TTS on the market - swap the system prompt to build anything from customer support to language tutors.
+Build a production voice AI agent in 5 minutes. Powered by the fastest TTS on the market — swap the system prompt to build anything from customer support to language tutors.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Murf Falcon](https://img.shields.io/badge/TTS-Murf%20Falcon-6366F1)](https://murf.ai/api/docs/text-to-speech/streaming) [![LiveKit](https://img.shields.io/badge/Transport-LiveKit-002cf2)](https://docs.livekit.io) [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
@@ -58,7 +58,7 @@ flowchart LR
 ### Step 1: Clone the repo
 
 ```bash
-git clone https://github.com/murf-ai/murf-livekit-starter.git
+git clone https://github.com/mayankinkk/murf-livekit-starter.git
 cd murf-livekit-starter
 ```
 
@@ -145,7 +145,7 @@ The backend runs as a long-lived Python process that connects to LiveKit as an a
 
 ### Frontend (Next.js) — Deploy to Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/murf-ai/murf-livekit-starter&root-directory=frontend&env=LIVEKIT_URL,LIVEKIT_API_KEY,LIVEKIT_API_SECRET&project-name=murf-voice-agent&repository-name=murf-voice-agent)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/mayankinkk/murf-livekit-starter&root-directory=frontend&env=LIVEKIT_URL,LIVEKIT_API_KEY,LIVEKIT_API_SECRET&project-name=murf-voice-agent&repository-name=murf-voice-agent)
 
 Set these environment variables in Vercel:
 
@@ -161,7 +161,7 @@ The frontend is a standard Next.js app. Point it at the same LiveKit instance yo
 The frontend and backend don't call each other directly — they both connect to **LiveKit**, which handles the real-time audio transport.
 
 1. Use the **same** `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` on both Railway and Vercel
-2. Set `AGENT_NAME=my-agent` on Vercel — this matches the `agent_name="my-agent"` registered in `backend/src/agent.py`
+2. Set `AGENT_NAME=pooja-voice` on Vercel — this matches the `agent_name="pooja-voice"` registered in `backend/src/agent.py`
 3. Verify: Railway logs should show the agent connected to LiveKit. Open your Vercel URL, click **Start talking** — the agent should respond
 
 If the agent doesn't connect, double-check that both services point to the same LiveKit project and that the backend is running (check Railway logs).
@@ -170,9 +170,9 @@ If the agent doesn't connect, double-check that both services point to the same 
 
 ## Change the Use Case
 
-The default system prompt makes this a **customer support agent**. You can change the agent’s behavior by editing the prompt.
+The default system prompt makes this a **customer support agent**. You can change the agent's behavior by editing the prompt.
 
-**Where the prompt lives:** `backend/src/agent.py`- the `SYSTEM_PROMPT` constant (near the top of the file, after the imports). Change that string to change what your voice agent does.
+**Where the prompt lives:** `backend/src/agent.py` - the `SYSTEM_PROMPT` constant (near the top of the file, after the imports). Change that string to change what your voice agent does.
 
 ### Example prompts (copy-paste)
 
@@ -220,7 +220,7 @@ STT is configured in `backend/src/agent.py` in the `AgentSession(stt=...)` call.
 
 ### LLM (Gemini vs OpenAI)
 
-- **Gemini (default):** Set `GOOGLE_API_KEY` and use `llm=google.LLM(model="gemini-3.5-flash-lite")` in `agent.py`.
+- **Gemini (default):** Set `GOOGLE_API_KEY` and use `llm=google.LLM(model="gemini-1.5-flash")` in `agent.py`.
 - **OpenAI:** Set `OPENAI_API_KEY`, add the OpenAI plugin, and use the corresponding `llm=openai.LLM(...)` in `agent.py`.
 
 ### Audio format
@@ -235,7 +235,12 @@ Murf Falcon and LiveKit handle audio format internally. For advanced options, se
 murf-livekit-starter/
 ├── backend/                 # Python voice agent (LiveKit Agents + Murf Falcon)
 │   ├── src/
-│   │   └── agent.py         # Agent entrypoint, pipeline (STT/LLM/TTS), system prompt
+│   │   ├── agent.py         # Agent entrypoint, pipeline (STT/LLM/TTS), system prompt + tools
+│   │   ├── database.py      # SQLite persistent caller memory (Day 4)
+│   │   └── tools.py         # Real-data function tools — live API + local dataset (Day 5)
+│   ├── data/
+│   │   ├── callers.db       # SQLite memory store (auto-created)
+│   │   └── schemes.json     # Hand-built India fintech & govt scheme dataset
 │   ├── tests/               # Agent tests
 │   ├── .env.example         # Backend env template
 │   ├── pyproject.toml       # Python deps (uv)
@@ -257,6 +262,47 @@ For deeper documentation on each part, see:
 
 - [Backend Documentation](./backend/README.md) — agent pipeline, voice/LLM/STT configuration, testing, deployment
 - [Frontend Documentation](./frontend/README.md) — UI customization, visualizers, theming, component architecture
+
+---
+
+## Day 5 — Real-Data Tools
+
+Pooja now has **three `@function_tool` methods** that fetch or compute real financial domain data:
+
+### Tool 1 · Live USD/INR Exchange Rate
+
+| | |
+|---|---|
+| **Trigger** | User asks about dollar-to-rupee rate, remittances, or foreign currency |
+| **Data source** | `open.er-api.com` — free public API, no API key required |
+| **Freshness** | Live (updates daily). Rate timestamp is always read aloud to the user |
+| **Failure path** | Falls back to last known hardcoded rate with a clear spoken disclaimer |
+
+```
+User: "Dollar ka rate kya hai aaj?"
+Pooja → calls get_usd_inr_rate()
+      → "As of Mon 10 Aug 2026, one US dollar equals 95.25 Indian rupees.
+         This is today's live rate from the exchange rate service."
+```
+
+### Tool 2 · RBI Repo Rate + BharatPay Loan APR
+
+| | |
+|---|---|
+| **Trigger** | User asks about loan interest rates, RBI repo rate, or EMI estimates |
+| **Data source** | Hand-built local dataset `data/schemes.json` — compiled from RBI press releases |
+| **Freshness** | `last_verified` date always stated aloud |
+| **Note** | No public RBI JSON API exists — local dataset is the correct approach per Day 5 guidelines |
+
+### Tool 3 · Government Scheme Eligibility Checker
+
+| | |
+|---|---|
+| **Trigger** | User asks which government financial schemes they qualify for |
+| **Schemes** | PM Mudra Yojana, Jan Dhan, PMSBY (accident insurance), PMJJBY (life insurance), APY (pension) |
+| **Inputs** | Age, has_bank_account, is_msme_owner, is_income_tax_payer — collected conversationally |
+| **Data source** | Pure local computation — never fails |
+| **Caveat** | Always tells user to confirm eligibility at myscheme.gov.in or nearest bank branch |
 
 ---
 

@@ -1,0 +1,82 @@
+{
+  "_meta": {
+    "source": "Hand-built local dataset — compiled from RBI press releases and NPCI circulars",
+    "last_verified": "2026-08-10",
+    "note": "This dataset is updated manually. For the latest policy rates, refer to rbi.org.in"
+  },
+  "rbi_rates": {
+    "repo_rate_pct": 6.25,
+    "reverse_repo_rate_pct": 6.00,
+    "effective_date": "2025-10-09",
+    "source": "RBI MPC resolution Oct 2025"
+  },
+  "upi_limits": {
+    "standard_per_txn_inr": 100000,
+    "standard_per_day_inr": 100000,
+    "high_value_categories_inr": 500000,
+    "high_value_categories": ["tax payments", "hospitals", "educational institutions", "IPO applications"],
+    "note": "Limits set by NPCI; individual banks may apply lower limits. Source: NPCI circular 2024."
+  },
+  "bharatpay_loan": {
+    "min_apr_pct": 10.5,
+    "max_apr_pct": 24.0,
+    "min_tenure_months": 3,
+    "max_tenure_months": 36,
+    "min_amount_inr": 10000,
+    "max_amount_inr": 500000,
+    "processing_fee_pct": 1.5,
+    "kyc_required": true,
+    "documents_needed": ["Aadhaar card", "PAN card", "Last 3 months bank statement", "Income proof (salary slip or ITR)"],
+    "turnaround_hours": "24-48"
+  },
+  "government_schemes": [
+    {
+      "id": "pmmy",
+      "name": "PM Mudra Yojana (PMMY)",
+      "category": "MSME Loan",
+      "max_loan_inr": 1000000,
+      "interest_rate": "Market rate (typically 8.5%–12%)",
+      "eligibility": ["Non-farm micro/small enterprise", "Age 18–65", "Valid Aadhaar & PAN"],
+      "bank_partners": ["SBI", "PNB", "HDFC", "BharatPay partner banks"],
+      "apply_at": "Any scheduled commercial bank or NBFC",
+      "source": "mudra.org.in"
+    },
+    {
+      "id": "pmjdy",
+      "name": "PM Jan Dhan Yojana (PMJDY)",
+      "category": "Basic Savings Account",
+      "overdraft_inr": 10000,
+      "eligibility": ["Indian citizen", "No existing bank account required"],
+      "benefits": ["Zero balance account", "RuPay debit card", "Accidental insurance ₹2 lakh", "Overdraft up to ₹10,000"],
+      "source": "pmjdy.gov.in"
+    },
+    {
+      "id": "pmsby",
+      "name": "PM Suraksha Bima Yojana (PMSBY)",
+      "category": "Accident Insurance",
+      "annual_premium_inr": 20,
+      "coverage_inr": 200000,
+      "eligibility": ["Age 18–70", "Linked savings bank account"],
+      "source": "jansuraksha.gov.in"
+    },
+    {
+      "id": "pmjjby",
+      "name": "PM Jeevan Jyoti Bima Yojana (PMJJBY)",
+      "category": "Life Insurance",
+      "annual_premium_inr": 436,
+      "coverage_inr": 200000,
+      "eligibility": ["Age 18–50", "Active savings bank account with auto-debit consent"],
+      "source": "jansuraksha.gov.in"
+    },
+    {
+      "id": "apy",
+      "name": "Atal Pension Yojana (APY)",
+      "category": "Pension",
+      "min_pension_inr": 1000,
+      "max_pension_inr": 5000,
+      "eligibility": ["Age 18–40", "Aadhaar & mobile number linked to bank account", "Not an income tax payer"],
+      "government_cocontribution": "50% of contribution (up to ₹1000/year) for 5 years — for new subscribers who joined before March 2016",
+      "source": "npscra.nsdl.co.in"
+    }
+  ]
+}

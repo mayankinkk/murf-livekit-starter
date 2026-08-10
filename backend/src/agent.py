@@ -1,13 +1,17 @@
 """
-BharatPay Pooja Voice Agent — Day 4
-Adds persistent SQLite memory so Pooja remembers returning callers.
+BharatPay Pooja Voice Agent — Day 5
+Adds real-data function tools so Pooja can look up live financial data.
 
-New capabilities
-----------------
-* lookup_caller()       — called at session start to see if we know this person
-* save_caller_info()    — called after the user gives consent to be remembered
-* Consent gate          — HARD RULE: always ask before saving anything
-* Personalised greeting — returning callers are welcomed back by name
+New capabilities (Day 5)
+------------------------
+* get_usd_inr_rate()         — Fetches LIVE USD/INR from open.er-api.com; graceful fallback
+* get_lending_rates()        — Returns RBI repo rate + BharatPay loan APR from local dataset
+* check_scheme_eligibility() — Checks caller against 5 GoI financial scheme eligibility rules
+
+Carried over from Day 4
+-----------------------
+* lookup_caller()       — Check if returning caller
+* save_caller_info()    — Persist caller info after consent
 """
 
 import json
@@ -32,6 +36,11 @@ from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from database import init_db, lookup_caller, save_caller
+from tools import (
+    get_usd_inr_rate_impl,
+    get_lending_rates_impl,
+    check_scheme_eligibility_impl,
+)
 
 logger = logging.getLogger("agent")
 
@@ -41,7 +50,7 @@ load_dotenv(".env.local")
 init_db()
 
 # ---------------------------------------------------------------------------
-# System Prompt
+# System Prompt — updated for Day 5
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """
@@ -50,8 +59,8 @@ You are Pooja — a friendly, calm, and professional customer support agent for 
 
 Your personality: warm, patient, never condescending. You treat every user with respect, whether they are a first-time smartphone user or a seasoned UPI power user. When a user is frustrated, you acknowledge their feeling before moving to a solution.
 
-# MEMORY & IDENTITY TOOLS  ← NEW for Day 4
-You have two tools available:
+# MEMORY & IDENTITY TOOLS  ← Day 4
+You have two memory tools:
 
 1. lookup_caller(user_id) — Use this at the START of every call with the caller's room/session ID to check if they are a returning caller. If they are, use the stored name and context to greet them personally.
 
@@ -61,13 +70,31 @@ You have two tools available:
    - NEVER save account numbers, Aadhaar numbers, PAN numbers, OTPs, PINs, or any specific monetary amounts.
    - Only save: name, language preference, schemes they discussed, and general eligibility answers (e.g., "has_existing_loan: yes").
 
+# REAL-DATA TOOLS  ← NEW for Day 5
+You now have three tools that fetch or compute real financial data:
+
+3. get_usd_inr_rate() — Call this when a user asks about the USD to INR exchange rate, remittance rates, or foreign currency. The tool returns the LIVE rate from an external source. ALWAYS tell the user when the data is from (the "as_of" field). If the tool returns a fallback, say so clearly: "Live rate service is unavailable right now, but the last rate I have is approximately..." — never invent a rate.
+
+4. get_lending_rates() — Call this when a user asks about loan interest rates, RBI repo rate, or BharatPay personal loan rates. The tool returns the current RBI policy rate and BharatPay loan APR range from a verified local dataset. Always mention when the data was last verified.
+
+5. check_scheme_eligibility(age, has_bank_account, is_msme_owner, is_income_tax_payer) — Call this when a user wants to know which government financial schemes they qualify for. Collect the required facts conversationally BEFORE calling the tool. Required facts:
+   - age (integer, e.g., 32)
+   - has_bank_account (true/false — do they have any savings bank account?)
+   - is_msme_owner (true/false — do they own or run a small business?)
+   - is_income_tax_payer (true/false — do they file income tax returns?)
+   If the user doesn't know, default to false for is_msme_owner and is_income_tax_payer. Always caveat that the result is a preliminary check, not a guarantee.
+
+TOOL FAILURE RULE: If any tool returns a warning or error, say so honestly. Example: "Live data is unavailable right now — here's the last information I have, though I'd recommend verifying it from your bank or RBI's website." Never invent data.
+
 # OBJECTIVES
 A call is successful when it achieves ONE OR MORE of the following:
 1. ACCOUNT HELP — Resolves queries about KYC status, profile updates, account activation, or registration issues.
 2. TRANSACTION SUPPORT — Helps with failed UPI payments, pending refunds, duplicate charges, or transaction history questions.
 3. PRODUCT GUIDANCE — Explains BharatPay's loan products: eligibility basics, how to apply, repayment schedules, and what documents are needed.
 4. APP TROUBLESHOOTING — Walks the user through UPI setup, QR code scanning, payment failures, or app login issues.
-5. ESCALATION — Recognises when the issue is beyond your scope and smoothly hands off to a human specialist.
+5. SCHEME GUIDANCE — Tells users which government financial schemes they may qualify for, using the eligibility tool.
+6. FINANCIAL INFO — Provides current lending rates, exchange rates, or RBI policy rate when asked.
+7. ESCALATION — Recognises when the issue is beyond your scope and smoothly hands off to a human specialist.
 
 Every call ends with the user feeling heard, informed, and not left hanging.
 
@@ -78,6 +105,7 @@ You know:
 - KYC requires Aadhaar and PAN card. KYC is mandatory for wallet limits above 10,000 rupees and for loan applications.
 - Common troubleshooting steps for UPI failures: check internet, verify UPI PIN, ensure linked bank account is active.
 - Loan application is done in-app; it typically takes 24 to 48 hours for a decision after document submission.
+- Government schemes like PM Mudra Yojana, Jan Dhan, PMSBY, PMJJBY, and Atal Pension Yojana are available to eligible citizens.
 
 You DO NOT know:
 - Live account data, balances, or transaction status for any specific user.
@@ -150,7 +178,8 @@ Say immediately: "Ye bahut important hai. Please call our fraud helpline at 1800
 
 GREETING_NEW = (
     "Namaste! Main hoon Pooja, BharatPay support se. "
-    "Main aapki help kar sakti hoon — UPI payments, wallet, account, ya loan ke baare mein. "
+    "Main aapki help kar sakti hoon — UPI payments, wallet, account, loan, "
+    "ya sarkari schemes ke baare mein. "
     "Aur don't worry — main kabhi bhi aapka OTP ya PIN nahi mangti. "
     "Toh batao, aaj main aapki kya help kar sakti hoon?"
 )
@@ -179,7 +208,7 @@ def _build_returning_greeting(record: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Agent class with memory tools
+# Agent class with Day 4 memory tools + Day 5 data tools
 # ---------------------------------------------------------------------------
 
 class Assistant(Agent):
@@ -189,7 +218,7 @@ class Assistant(Agent):
         self._caller_record = caller_record  # pre-fetched before session start
 
     # ------------------------------------------------------------------
-    # Tool 1 — Look up a caller
+    # Day 4 — Tool 1: Look up a caller
     # ------------------------------------------------------------------
     @function_tool
     async def lookup_caller_tool(
@@ -212,7 +241,7 @@ class Assistant(Agent):
         return json.dumps({"status": "returning_caller", "record": record})
 
     # ------------------------------------------------------------------
-    # Tool 2 — Save caller info (consent required)
+    # Day 4 — Tool 2: Save caller info (consent required)
     # ------------------------------------------------------------------
     @function_tool
     async def save_caller_info(
@@ -252,6 +281,97 @@ class Assistant(Agent):
             consent_given=True,
         )
         return json.dumps({"status": "saved", "record": record})
+
+    # ------------------------------------------------------------------
+    # Day 5 — Tool 3: Live USD/INR exchange rate
+    # ------------------------------------------------------------------
+    @function_tool
+    async def get_usd_inr_rate(
+        self,
+        context: RunContext,
+    ) -> str:
+        """Fetch the current USD to INR exchange rate from a live public source.
+
+        Call this when the user asks about:
+        - Dollar to rupee conversion
+        - Sending or receiving money from abroad (remittance)
+        - Foreign currency rates in general
+
+        The tool will tell you whether the data is live or a fallback.
+        ALWAYS tell the user when the rate is from (the 'data_as_of' field in the response).
+        If the response has status='fallback', say so clearly and recommend the user
+        verify with their bank or RBI's website.
+        """
+        logger.info("Tool: get_usd_inr_rate called")
+        return await get_usd_inr_rate_impl()
+
+    # ------------------------------------------------------------------
+    # Day 5 — Tool 4: RBI repo rate + BharatPay loan APR
+    # ------------------------------------------------------------------
+    @function_tool
+    async def get_lending_rates(
+        self,
+        context: RunContext,
+    ) -> str:
+        """Get the current RBI Repo Rate and BharatPay personal loan interest rate range.
+
+        Call this when the user asks about:
+        - Home loan or personal loan interest rates
+        - RBI policy rate or repo rate
+        - How much interest BharatPay charges on loans
+        - EMI estimates or loan cost calculations
+        - Documents required for a BharatPay loan
+
+        Data is sourced from a verified local dataset compiled from RBI press releases.
+        Always tell the user the 'last_verified' date from the response so they know
+        how current the information is.
+        """
+        logger.info("Tool: get_lending_rates called")
+        return get_lending_rates_impl()
+
+    # ------------------------------------------------------------------
+    # Day 5 — Tool 5: Government scheme eligibility check
+    # ------------------------------------------------------------------
+    @function_tool
+    async def check_scheme_eligibility(
+        self,
+        context: RunContext,
+        age: int,
+        has_bank_account: bool,
+        is_msme_owner: bool = False,
+        is_income_tax_payer: bool = False,
+    ) -> str:
+        """Check which Indian government financial schemes the caller likely qualifies for.
+
+        Call this ONLY after you have collected ALL of the following facts conversationally:
+        - age: the caller's age in years (integer)
+        - has_bank_account: whether they already have a savings bank account
+        - is_msme_owner: whether they own or run a small/micro/medium business
+        - is_income_tax_payer: whether they file income tax returns
+
+        Schemes checked: PM Mudra Yojana, PM Jan Dhan Yojana, PMSBY (accident insurance),
+        PMJJBY (life insurance), Atal Pension Yojana.
+
+        The result includes a 'spoken_summary' field — use that text to tell the user
+        what schemes they qualify for. Always add the caveat that this is a preliminary check
+        and they should confirm eligibility at a bank branch or myscheme.gov.in.
+
+        Args:
+            age: Caller's age in complete years.
+            has_bank_account: True if the caller has any savings bank account.
+            is_msme_owner: True if caller owns or runs a small/micro/medium enterprise.
+            is_income_tax_payer: True if caller files income tax returns.
+        """
+        logger.info(
+            "Tool: check_scheme_eligibility called  age=%s  bank=%s  msme=%s  taxpayer=%s",
+            age, has_bank_account, is_msme_owner, is_income_tax_payer,
+        )
+        return check_scheme_eligibility_impl(
+            age=age,
+            has_bank_account=has_bank_account,
+            is_msme_owner=is_msme_owner,
+            is_income_tax_payer=is_income_tax_payer,
+        )
 
 
 # ---------------------------------------------------------------------------
