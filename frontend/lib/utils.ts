@@ -2,6 +2,7 @@ import { cache } from 'react';
 import { TokenSource } from 'livekit-client';
 import { APP_CONFIG_DEFAULTS } from '@/app-config';
 import type { AppConfig } from '@/app-config';
+import { getOrCreateUserId } from '@/lib/persistent-user';
 
 export const CONFIG_ENDPOINT = process.env.NEXT_PUBLIC_APP_CONFIG_ENDPOINT;
 export const SANDBOX_ID = process.env.SANDBOX_ID;
@@ -114,6 +115,9 @@ export function getSandboxTokenSource(appConfig: AppConfig) {
         },
         body: JSON.stringify({
           room_config: roomConfig,
+          // Day 4 — persistent caller memory: carry the browser's stable UUID
+          // so the agent can recognise returning callers.
+          participant_attributes: { user_id: getOrCreateUserId() },
         }),
       });
       return await res.json();

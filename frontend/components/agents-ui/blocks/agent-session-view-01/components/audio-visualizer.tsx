@@ -1,8 +1,9 @@
 'use client';
 
 import React from 'react';
+import { LocalAudioTrack, Track } from 'livekit-client';
 import { type MotionProps, motion } from 'motion/react';
-import { useVoiceAssistant } from '@livekit/components-react';
+import { useLocalParticipant, useVoiceAssistant } from '@livekit/components-react';
 import { AgentAudioVisualizerAura } from '@/components/agents-ui/agent-audio-visualizer-aura';
 import { AgentAudioVisualizerBar } from '@/components/agents-ui/agent-audio-visualizer-bar';
 import { AgentAudioVisualizerGrid } from '@/components/agents-ui/agent-audio-visualizer-grid';
@@ -45,13 +46,21 @@ export function AudioVisualizer({
   ...props
 }: AudioVisualizerProps) {
   const { state, audioTrack } = useVoiceAssistant();
+  const { localParticipant } = useLocalParticipant();
+  const micPublication = localParticipant.getTrackPublication(Track.Source.Microphone);
+  const userAudioTrack =
+    micPublication?.track instanceof LocalAudioTrack ? micPublication.track : undefined;
+
+  // While the agent listens we react to the user's microphone; while the agent
+  // speaks we react to the synthesized agent audio.
+  const activeTrack = state === 'listening' ? (userAudioTrack ?? audioTrack) : audioTrack;
 
   switch (audioVisualizerType) {
     case 'aura': {
       return (
         <MotionAgentAudioVisualizerAura
           state={state}
-          audioTrack={audioTrack}
+          audioTrack={activeTrack}
           color={audioVisualizerColor}
           colorShift={audioVisualizerColorShift}
           className={cn('size-[300px] md:size-[450px]', className)}
@@ -64,7 +73,7 @@ export function AudioVisualizer({
         <motion.div className={className} {...props}>
           <MotionAgentAudioVisualizerWave
             state={state}
-            audioTrack={audioTrack}
+            audioTrack={activeTrack}
             color={audioVisualizerColor}
             colorShift={audioVisualizerColorShift}
             lineWidth={isChatOpen ? audioVisualizerWaveLineWidth * 2 : audioVisualizerWaveLineWidth}
@@ -90,7 +99,7 @@ export function AudioVisualizer({
           size={size}
           state={state}
           color={audioVisualizerColor}
-          audioTrack={audioTrack}
+          audioTrack={activeTrack}
           rowCount={audioVisualizerGridRowCount}
           columnCount={audioVisualizerGridColumnCount}
           radius={Math.round(
@@ -108,10 +117,11 @@ export function AudioVisualizer({
             size="xl"
             state={state}
             color={audioVisualizerColor}
-            audioTrack={audioTrack}
+            audioTrack={activeTrack}
             radius={audioVisualizerRadialRadius}
             barCount={audioVisualizerRadialBarCount}
-            className="size-[450px]"
+            className="size-[min(78vw,440px)]"
+            style={{ width: 'min(78vw, 440px)', height: 'min(78vw, 440px)' }}
           />
         </motion.div>
       );

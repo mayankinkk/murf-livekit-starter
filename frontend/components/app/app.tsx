@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { TokenSource } from 'livekit-client';
 import { useSession } from '@livekit/components-react';
 import { WarningIcon } from '@phosphor-icons/react/dist/ssr';
@@ -11,6 +11,7 @@ import { ViewController } from '@/components/app/view-controller';
 import { Toaster } from '@/components/ui/sonner';
 import { useAgentErrors } from '@/hooks/useAgentErrors';
 import { useDebugMode } from '@/hooks/useDebug';
+import { getOrCreateUserId } from '@/lib/persistent-user';
 import { getSandboxTokenSource } from '@/lib/utils';
 
 const IN_DEVELOPMENT = process.env.NODE_ENV !== 'production';
@@ -33,9 +34,16 @@ export function App({ appConfig }: AppProps) {
       : TokenSource.endpoint('/api/token');
   }, [appConfig]);
 
+  // Day 4 — persistent caller memory: one stable UUID per browser, stored in
+  // localStorage and sent to the agent through the participant attributes so
+  // returning callers are recognised automatically.
+  const userId = useState(getOrCreateUserId)[0];
+
   const session = useSession(
     tokenSource,
-    appConfig.agentName ? { agentName: appConfig.agentName } : undefined
+    appConfig.agentName
+      ? { agentName: appConfig.agentName, participantAttributes: { user_id: userId } }
+      : { participantAttributes: { user_id: userId } }
   );
 
   return (

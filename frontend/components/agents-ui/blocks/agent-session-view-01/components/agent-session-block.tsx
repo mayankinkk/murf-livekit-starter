@@ -9,8 +9,9 @@ import {
   type AgentControlBarControls,
 } from '@/components/agents-ui/agent-control-bar';
 import { Shimmer } from '@/components/ai-elements/shimmer';
+import type { AiLoaderStatus } from '@/components/ui/ai-loader';
+import { VoiceBarVisualizer } from '@/components/ui/voice-bar-visualizer';
 import { cn } from '@/lib/shadcn/utils';
-import { TileLayout } from './tile-view';
 
 const MotionMessage = motion.create(Shimmer);
 
@@ -92,7 +93,7 @@ export function Fade({ top = false, bottom = false, className }: FadeProps) {
   return (
     <div
       className={cn(
-        'from-background pointer-events-none h-4 bg-linear-to-b to-transparent',
+        'pointer-events-none h-4 bg-linear-to-b from-[#050505] to-transparent',
         top && 'bg-linear-to-b',
         bottom && 'bg-linear-to-t',
         className
@@ -133,24 +134,13 @@ export interface AgentSessionView_01Props {
    */
   isPreConnectBufferEnabled?: boolean;
 
-  /** Selects the visualizer style rendered in the main tile area. */
-  audioVisualizerType?: 'bar' | 'wave' | 'grid' | 'radial' | 'aura';
-  /** Primary hex color used by supported audio visualizer variants. */
-  audioVisualizerColor?: `#${string}`;
-  /** Hue shift intensity used by certain visualizers. */
-  audioVisualizerColorShift?: number;
-  /** Number of bars to render when `audioVisualizerType` is `bar`. */
-  audioVisualizerBarCount?: number;
-  /** Number of rows in the visualizer when `audioVisualizerType` is `grid`. */
-  audioVisualizerGridRowCount?: number;
-  /** Number of columns in the visualizer when `audioVisualizerType` is `grid`. */
-  audioVisualizerGridColumnCount?: number;
-  /** Number of radial bars when `audioVisualizerType` is `radial`. */
-  audioVisualizerRadialBarCount?: number;
-  /** Base radius of the radial visualizer when `audioVisualizerType` is `radial`. */
-  audioVisualizerRadialRadius?: number;
-  /** Stroke width of the wave path when `audioVisualizerType` is `wave`. */
-  audioVisualizerWaveLineWidth?: number;
+  /**
+   * Live RupeeGPT Voice agent state used to drive the status pill and the
+   * glowing orb at the center of the connected session.
+   *
+   * @default 'connecting'
+   */
+  aiLoaderStatus?: AiLoaderStatus;
   /** Optional class name merged onto the outer `<section>` container. */
   className?: string;
 }
@@ -162,22 +152,13 @@ export function AgentSessionView_01({
   supportsScreenShare = true,
   isPreConnectBufferEnabled = true,
 
-  audioVisualizerType,
-  audioVisualizerColor,
-  audioVisualizerColorShift,
-  audioVisualizerBarCount,
-  audioVisualizerGridRowCount,
-  audioVisualizerGridColumnCount,
-  audioVisualizerRadialBarCount,
-  audioVisualizerRadialRadius,
-  audioVisualizerWaveLineWidth,
-  ref,
+  aiLoaderStatus = 'connecting',
   className,
   ...props
 }: React.ComponentProps<'section'> & AgentSessionView_01Props) {
   const session = useSessionContext();
   const { messages } = useSessionMessages(session);
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
 
@@ -200,13 +181,34 @@ export function AgentSessionView_01({
 
   return (
     <section
-      ref={ref}
-      className={cn('bg-background relative z-10 h-full w-full overflow-hidden', className)}
+      className={cn('relative z-10 h-full w-full overflow-hidden bg-[#050505]', className)}
       {...props}
     >
       <Fade top className="absolute inset-x-4 top-0 z-10 h-40" />
-      {/* transcript */}
 
+      {/* Live voice agent status pill */}
+      <div className="pointer-events-none absolute inset-x-0 top-6 z-30 flex justify-center px-4">
+        <div className="flex items-center gap-2 rounded-full border border-white/[0.08] bg-[#0b0b0b]/90 px-4.5 py-1.5 shadow-[0_4px_20px_rgba(0,0,0,0.4)] backdrop-blur-md">
+          <span
+            className={cn(
+              'mr-1 size-1.5 animate-pulse rounded-full',
+              aiLoaderStatus === 'speaking' && 'bg-[#8b5cf6] shadow-[0_0_6px_#8b5cf6]',
+              aiLoaderStatus === 'listening' && 'bg-[#c4a7ff] shadow-[0_0_6px_#c4a7ff]',
+              aiLoaderStatus === 'connecting' &&
+                'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.5)]'
+            )}
+          />
+          <span className="font-sans text-[9px] font-semibold tracking-[0.25em] text-[#f5f5f5] uppercase">
+            {aiLoaderStatus === 'speaking'
+              ? 'SPEAKING...'
+              : aiLoaderStatus === 'listening'
+                ? 'LISTENING TO YOU...'
+                : 'CONNECTING...'}
+          </span>
+        </div>
+      </div>
+
+      {/* Transcript view when chat toggle is open */}
       <div className="absolute top-0 bottom-[135px] flex w-full flex-col md:bottom-[170px]">
         <AnimatePresence>
           {chatOpen && (
@@ -223,20 +225,52 @@ export function AgentSessionView_01({
           )}
         </AnimatePresence>
       </div>
-      {/* Tile layout */}
-      <TileLayout
-        chatOpen={chatOpen}
-        audioVisualizerType={audioVisualizerType}
-        audioVisualizerColor={audioVisualizerColor}
-        audioVisualizerColorShift={audioVisualizerColorShift}
-        audioVisualizerBarCount={audioVisualizerBarCount}
-        audioVisualizerRadialBarCount={audioVisualizerRadialBarCount}
-        audioVisualizerRadialRadius={audioVisualizerRadialRadius}
-        audioVisualizerGridRowCount={audioVisualizerGridRowCount}
-        audioVisualizerGridColumnCount={audioVisualizerGridColumnCount}
-        audioVisualizerWaveLineWidth={audioVisualizerWaveLineWidth}
-      />
-      {/* Bottom */}
+
+      {/* Main AI Voice Bar Visualizer */}
+      <div className="absolute inset-0 flex items-center justify-center pt-16 pb-32 md:pb-40">
+        <AnimatePresence mode="wait">
+          {!chatOpen && (
+            <motion.div
+              key="voice-bar-visualizer"
+              initial={{ opacity: 0, scale: 0.92 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.92, transition: { duration: 0.35 } }}
+              transition={{ duration: 0.5, ease: 'easeOut' }}
+              className="relative flex flex-col items-center"
+            >
+              {/* RUPEEGPT branding above the bars */}
+              <p className="mb-4 font-sans text-[20px] font-semibold tracking-[0.2em] text-[#d3d0da] drop-shadow-[0_1px_3px_rgba(0,0,0,0.7)] select-none md:text-[22px]">
+                RUPEEGPT
+              </p>
+
+              {/* Voice energy bars */}
+              <div className="relative w-full max-w-[80vw] overflow-visible px-2">
+                <VoiceBarVisualizer status={aiLoaderStatus} />
+              </div>
+
+              {/* State caption under the bars */}
+              <p
+                className={cn(
+                  'mt-5 font-sans text-[13px] font-medium tracking-wide select-none',
+                  aiLoaderStatus === 'speaking'
+                    ? 'text-[#c4a7ff]'
+                    : aiLoaderStatus === 'listening'
+                      ? 'text-[#b7a9d9]'
+                      : 'animate-pulse text-[#9a9a9a]'
+                )}
+              >
+                {aiLoaderStatus === 'speaking'
+                  ? 'RupeeGPT is speaking'
+                  : aiLoaderStatus === 'listening'
+                    ? 'RupeeGPT is listening'
+                    : 'Connecting to RupeeGPT...'}
+              </p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Bottom Control Bar */}
       <motion.div
         {...BOTTOM_VIEW_MOTION_PROPS}
         className="absolute inset-x-3 bottom-0 z-50 md:inset-x-12"
@@ -250,14 +284,14 @@ export function AgentSessionView_01({
                 duration={2}
                 aria-hidden={messages.length > 0}
                 {...SHIMMER_MOTION_PROPS}
-                className="pointer-events-none mx-auto block w-full max-w-2xl pb-4 text-center text-sm font-semibold"
+                className="pointer-events-none mx-auto block w-full max-w-2xl pb-4 text-center text-sm font-semibold text-[#9a9a9a]"
               >
                 {preConnectMessage}
               </MotionMessage>
             )}
           </AnimatePresence>
         )}
-        <div className="bg-background relative mx-auto max-w-2xl pb-3 md:pb-12">
+        <div className="relative mx-auto max-w-2xl bg-transparent pb-4 md:pb-12">
           <Fade bottom className="absolute inset-x-0 top-0 h-4 -translate-y-full" />
           <AgentControlBar
             variant="livekit"
@@ -266,6 +300,7 @@ export function AgentSessionView_01({
             isConnected={session.isConnected}
             onDisconnect={session.end}
             onIsChatOpenChange={setChatOpen}
+            className="border border-white/[0.08] bg-[#0b0b0b]/90 shadow-[0_10px_35px_rgba(0,0,0,0.6)] backdrop-blur-md"
           />
         </div>
       </motion.div>

@@ -1,12 +1,11 @@
-// Configured for Murf LiveKit Starter
 export interface AppConfig {
   pageTitle: string;
   pageDescription: string;
   companyName: string;
 
-  welcomeTitle?: string;
-  welcomeSubtitle?: string;
-  welcomeDescription?: string;
+  welcomeTitle: string;
+  welcomeSubtitle: string;
+  welcomeDescription: string;
 
   supportsChatInput: boolean;
   supportsVideoInput: boolean;
@@ -38,30 +37,30 @@ export interface AppConfig {
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  // BharatPay — Pooja Voice Support Agent (#VoiceForBharat)
-  companyName: 'BharatPay Support',
-  pageTitle: 'Pooja — BharatPay Voice Support',
-  pageDescription: 'Talk to Pooja, your BharatPay AI support agent — UPI, payments, loans, and more. #VoiceForBharat',
+  companyName: 'RupeeGPT Voice',
+  pageTitle: 'RupeeGPT Voice',
+  pageDescription:
+    'Your AI financial voice assistant for India — banking, UPI, savings, loans and financial safety, made simple.',
 
-  welcomeTitle: 'BharatPay Support',
-  welcomeSubtitle: 'POOJA: AI FINANCIAL VOICE ASSISTANT',
-  welcomeDescription: 'Get instant voice help with bank accounts, UPI payments, credit cards, or fraud safety in Hindi, English, and Hinglish.',
+  welcomeTitle: 'RupeeGPT',
+  welcomeSubtitle: 'Your AI Financial Voice Assistant',
+  welcomeDescription: 'Talk to RupeeGPT about banking, UPI, savings, loans and financial safety.',
 
   supportsChatInput: true,
-  supportsVideoInput: false,
-  supportsScreenShare: false,
-  isPreConnectBufferEnabled: true,
+  supportsVideoInput: true,
+  supportsScreenShare: true,
+  isPreConnectBufferEnabled: false,
 
-  logo: '/bharatpay-logo.png',
-  accent: '#7C3AED',         // Premium purple
-  logoDark: '/bharatpay-logo.png',
-  accentDark: '#8B5CF6',     // Violet glow
-  startButtonText: 'Talk to Pooja',
+  logo: '/rupegpt-logo.png',
+  accent: '#7C3AED',
+  logoDark: '/rupegpt-logo.png',
+  accentDark: '#8B5CF6',
+  startButtonText: 'Start RupeeGPT',
 
-  // Radial audio visualizer with violet glow
+  // audio visualization configuration
   audioVisualizerType: 'radial',
-  audioVisualizerColor: '#7C3AED',
-  audioVisualizerColorDark: '#8B5CF6',
+  audioVisualizerColor: '#8B5CF6',
+  audioVisualizerColorDark: '#A78BFA',
   audioVisualizerColorShift: 0.3,
   audioVisualizerBarCount: 5,
   audioVisualizerRadialBarCount: 36,

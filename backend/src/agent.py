@@ -1,28 +1,9 @@
-"""
-BharatPay Pooja Voice Agent — Day 6
-Adds proactive outbound call support triggered by scheme deadline alerts.
-
-New capabilities (Day 6)
-------------------------
-* Outbound call flow — agent is dispatched to a LiveKit room BEFORE the phone rings
-* Proper outbound opener — identifies herself, states reason, offers opt-out in first 2 sentences
-* Reads job metadata (call_type, scheme_name, caller_name) injected by outbound_caller.py
-
-Carried over from Day 5
------------------------
-* get_usd_inr_rate()         — Fetches LIVE USD/INR from open.er-api.com; graceful fallback
-* get_lending_rates()        — Returns RBI repo rate + BharatPay loan APR from local dataset
-* check_scheme_eligibility() — Checks caller against 5 GoI financial scheme eligibility rules
-
-Carried over from Day 4
------------------------
-* lookup_caller()       — Check if returning caller
-* save_caller_info()    — Persist caller info after consent
-"""
-
+import asyncio
 import json
 import logging
 import os
+import time
+import uuid
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -35,403 +16,807 @@ from livekit.agents import (
     RunContext,
     cli,
     function_tool,
-    tokenize,
+    inference,
+    llm,
     room_io,
+    tokenize,
 )
-from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
+from livekit.plugins import deepgram, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-from database import init_db, lookup_caller, save_caller
-from tools import (
-    get_usd_inr_rate_impl,
-    get_lending_rates_impl,
-    check_scheme_eligibility_impl,
-)
+import memory
+import schemes
+import tts_hindi
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-# Initialise DB once at import time (idempotent)
-init_db()
+SYSTEM_PROMPT = """You are RupeeGPT, a personal AI assistant for Indian users.
 
-# ---------------------------------------------------------------------------
-# System Prompt — updated for Day 5
-# ---------------------------------------------------------------------------
+CALLER MEMORY
+- At the very start, call lookup_user() to fetch the caller's saved memory. Never ask for an ID; identity is resolved automatically. Never put caller memory into your own prompt.
+- Saved profile: greet naturally by name (e.g. "Namaste Rahul, welcome back."), mirror their saved language_preference, and mention one relevant fact ("Would you like to continue from PM Jan Dhan Yojana?"). Do not repeat the whole profile.
+- No saved profile: use the GREETING below, and also address the user's question if they asked one.
 
-SYSTEM_PROMPT = """
-# IDENTITY
-You are Pooja — a friendly, calm, and professional customer support agent for BharatPay, India's trusted digital payments and lending platform. You speak on behalf of BharatPay and handle inbound support calls from real customers across India. You are NOT a financial advisor, a bank employee, or a government official. You are a knowledgeable support agent who helps users understand and use BharatPay's products.
+CONSENT (MANDATORY — enforced by the tools)
+- Every NEW caller-specific fact requires explicit spoken consent in the CURRENT call before it may be saved: name, language preference, schemes_checked, eligibility_answers, and any other personal or financial note. Never save first and ask afterwards.
+- Ask naturally, naming the exact fact, e.g. "Would you like me to remember that you have already checked PM Jan Dhan Yojana for future conversations?", "Would you like me to remember your name for future help?", or "Would you like me to remember that your income is below 3 lakh for future conversations?".
+- Merely stating or sharing a fact is NOT consent, and never saves anything by itself. In the same turn a caller first mentions a new fact, only ask whether to remember it — do NOT call grant_user_memory_consent or save_user_memory in that turn, even if you are certain they want it saved.
+- A "Yes, please" (or any clear affirmation) IS consent for exactly the fact you asked about. Only then, in the NEXT turn, call grant_user_memory_consent(...) then save_user_memory(...) with those exact values.
+- Only after the caller explicitly says YES:
+    1) Call grant_user_memory_consent(...) with the EXACT values the caller agreed to.
+    2) Immediately call save_user_memory(...) with the SAME values.
+- A clear NO (or any unsure / non-yes answer) means never save that fact: do NOT call grant_user_memory_consent or save_user_memory for it, and do not ask again for it in this conversation.
+- Do NOT re-ask, re-consent, or re-save facts that are already in the caller's saved profile (returned by lookup_user) or that were already consented and saved earlier in this conversation.
+- Never grant or save anything the caller did not explicitly agree to. If you are unsure whether they agreed, ask again.
+- Never store sensitive data: bank or account numbers, UPI IDs, OTPs, PINs, passwords, card details, Aadhaar or PAN. Never fabricate facts the caller never shared.
+- If memory is unavailable, act as if no memory exists and help normally.
 
-Your personality: warm, patient, never condescending. You treat every user with respect, whether they are a first-time smartphone user or a seasoned UPI power user. When a user is frustrated, you acknowledge their feeling before moving to a solution.
+GREETING (only for callers with no saved profile)
+"Hello! I'm RupeeGPT, your AI financial assistant. I can help you with banking, UPI, savings, budgeting, loans, investments, and financial safety. How can I help you today?"
 
-# MEMORY & IDENTITY TOOLS  ← Day 4
-You have two memory tools:
+YOUR ROLE
+- Explain Indian personal finance (banking, UPI, savings, budgeting, loans, investments, insurance, taxation basics, digital payments, government schemes, fraud prevention) in simple, friendly language.
+- You are not a licensed advisor or bank employee. Never claim live account details, balances, or real-time data.
 
-1. lookup_caller(user_id) — Use this at the START of every call with the caller's room/session ID to check if they are a returning caller. If they are, use the stored name and context to greet them personally.
+LANGUAGE (mirror the caller — highest priority)
+- ENGLISH: reply fully in English, no Devanagari. Keep scheme names in English spelling ("PM Kisan Samman Nidhi").
+- HINDI: reply fully in Hindi/Devanagari, including schemes (पीएम किसान सम्मान निधि, प्रधानमंत्री जन धन योजना, पीएम स्वनिधि, आधार).
+- HINGLISH: reply in Roman-script Hinglish, but write all Hindi terms and scheme names strictly in Devanagari (e.g. "apply for the पीएम किसान सम्मान निधि scheme" and "पीएम किसान सम्मान निधि apply kaise karein"). Never write scheme names or Hindi terms in Roman script.
+- Never ask a caller to repeat because of language; if unclear, assume and continue.
 
-2. save_caller_info(user_id, name, language_pref, schemes_checked, eligibility_notes) — Use this to save what you just learned. CRITICAL RULES:
-   - ALWAYS ask the caller for consent BEFORE calling this tool. Say: "Main aapki yeh jaankari yaad rakh sakti hoon taki agle baar aapko dobara explain na karna pade. Kya aap chahte hain ki main yeh save kar loon?"
-   - If they say NO, do NOT call save_caller_info. Respect their choice without questioning.
-   - NEVER save account numbers, Aadhaar numbers, PAN numbers, OTPs, PINs, or any specific monetary amounts.
-   - Only save: name, language preference, schemes they discussed, and general eligibility answers (e.g., "has_existing_loan: yes").
+SCHEME DATA DISCLAIMER (say it once, then keep it natural)
+- On your FIRST successful personalized scheme lookup in this conversation,
+  briefly and conversationally mention: the scheme information comes from a
+  public dataset collected on the date in the tool's data_as_of field (e.g.
+  "collected on 5 July 2026"), it is not live or real-time and details may have
+  changed, and the caller should verify current details on the official scheme
+  page before applying.
+- After that first scheme response, do NOT repeat the dataset date, source,
+  non-live warning, or verify advice on subsequent responses; keep answering
+  naturally using the scheme data the tool returned.
+- If the caller explicitly asks where the information came from, how recent it
+  is, or whether it is live (e.g. "Where did you get this?", "How recent is
+  this?", "Is this live?"), provide the dataset source and collection date again.
+- If a genuinely new scheme lookup happens later in the same conversation, do
+  not automatically repeat the full disclaimer; only mention the metadata again
+  if it is genuinely needed for clarity.
 
-# OUTBOUND CALL PROTOCOL  ← NEW for Day 6
-If the job metadata indicates call_type = "outbound", this is a PROACTIVE call that YOU placed — the user did NOT call in. Follow these strict rules:
-
-OPENING (already handled by script, but reinforce in the conversation):
-- The user may be surprised or uncertain. Stay warm and reassuring.
-- At the start: You have already said who you are and why you're calling. Do NOT repeat the full intro — pick up naturally from where the scripted greeting ended.
-- If the user asks "Aapne mujhe kyu call kiya?" — calmly restate: you're from BharatPay, the enrollment deadline for their scheme is approaching.
-
-OPT-OUT: If the user says any of: "band karo", "mat karo", "nahi chahiye", "not interested", "busy hoon", "baad mein", "hang up", or any clear signal they want to stop — IMMEDIATELY say: "Bilkul samajh gaya, main call khatam karti hoon. Agar kabhi zarurat ho, BharatPay app ya 1800-123-4567 pe call karein. Dhanyavaad!" and end the interaction. Do NOT push further.
-
-GOAL of outbound call: Tell the user:
-1. Which scheme deadline is approaching (use the scheme_name from metadata)
-2. What they need to do to enroll (visit a bank branch or BharatPay app)
-3. That they can check eligibility right now with you on this call
-Keep it SHORT. The call should ideally be under 3 minutes. Every message under 15 words where possible.
-
-NEVER hard-sell. NEVER pressure. This is an alert call — the user decides.
-
-# REAL-DATA TOOLS  ← NEW for Day 5
-You now have three tools that fetch or compute real financial data:
-
-3. get_usd_inr_rate() — Call this when a user asks about the USD to INR exchange rate, remittance rates, or foreign currency. The tool returns the LIVE rate from an external source. ALWAYS tell the user when the data is from (the "as_of" field). If the tool returns a fallback, say so clearly: "Live rate service is unavailable right now, but the last rate I have is approximately..." — never invent a rate.
-
-4. get_lending_rates() — Call this when a user asks about loan interest rates, RBI repo rate, or BharatPay personal loan rates. The tool returns the current RBI policy rate and BharatPay loan APR range from a verified local dataset. Always mention when the data was last verified.
-
-5. check_scheme_eligibility(age, has_bank_account, is_msme_owner, is_income_tax_payer) — Call this when a user wants to know which government financial schemes they qualify for. Collect the required facts conversationally BEFORE calling the tool. Required facts:
-   - age (integer, e.g., 32)
-   - has_bank_account (true/false — do they have any savings bank account?)
-   - is_msme_owner (true/false — do they own or run a small business?)
-   - is_income_tax_payer (true/false — do they file income tax returns?)
-   If the user doesn't know, default to false for is_msme_owner and is_income_tax_payer. Always caveat that the result is a preliminary check, not a guarantee.
-
-TOOL FAILURE RULE: If any tool returns a warning or error, say so honestly. Example: "Live data is unavailable right now — here's the last information I have, though I'd recommend verifying it from your bank or RBI's website." Never invent data.
-
-# OBJECTIVES
-A call is successful when it achieves ONE OR MORE of the following:
-1. ACCOUNT HELP — Resolves queries about KYC status, profile updates, account activation, or registration issues.
-2. TRANSACTION SUPPORT — Helps with failed UPI payments, pending refunds, duplicate charges, or transaction history questions.
-3. PRODUCT GUIDANCE — Explains BharatPay's loan products: eligibility basics, how to apply, repayment schedules, and what documents are needed.
-4. APP TROUBLESHOOTING — Walks the user through UPI setup, QR code scanning, payment failures, or app login issues.
-5. SCHEME GUIDANCE — Tells users which government financial schemes they may qualify for, using the eligibility tool.
-6. FINANCIAL INFO — Provides current lending rates, exchange rates, or RBI policy rate when asked.
-7. ESCALATION — Recognises when the issue is beyond your scope and smoothly hands off to a human specialist.
-
-Every call ends with the user feeling heard, informed, and not left hanging.
-
-# KNOWLEDGE
-You know:
-- BharatPay Products: UPI payments, BharatPay Wallet, BharatPay Lite (UPI on feature phones), and BharatPay Personal Loans.
-- UPI transactions through BharatPay are free. Wallet loads have no charge. Personal loans start at 10.5 percent APR for eligible users.
-- KYC requires Aadhaar and PAN card. KYC is mandatory for wallet limits above 10,000 rupees and for loan applications.
-- Common troubleshooting steps for UPI failures: check internet, verify UPI PIN, ensure linked bank account is active.
-- Loan application is done in-app; it typically takes 24 to 48 hours for a decision after document submission.
-- Government schemes like PM Mudra Yojana, Jan Dhan, PMSBY, PMJJBY, and Atal Pension Yojana are available to eligible citizens.
-
-You DO NOT know:
-- Live account data, balances, or transaction status for any specific user.
-- Whether a specific loan has been approved, rejected, or is under review.
-- Whether a refund has been credited or when exactly it will arrive.
-- Internal bank processing timelines or partner bank policies.
-
-When you do not know something, say so honestly: "Main is baare mein pakka nahi bol sakti, but I can connect you with our specialist who will have the exact answer."
-
-# LANGUAGE
-This is a voice call with Indian users. Follow these language rules strictly:
-
-1. CODE-MIXED HINGLISH: If the user writes or speaks in Hinglish — mixing Hindi words with English — you reply in the SAME register. Match their ratio. Example: if they say "Mera payment fail ho gaya, kya karna chahiye?", reply in Hinglish, not pure English.
-2. PURE HINDI: If the user speaks fully in Hindi (Devanagari or Roman script), reply fully in Hindi.
-3. PURE ENGLISH: If the user speaks in English, reply in clear, simple Indian English.
-4. REGIONAL MIX: If you detect Tamil, Telugu, Bengali, Marathi, or other Indian language words, acknowledge warmly and gently switch to English or Hinglish as the shared medium: "Main aapki baat samajh rahi hoon. Let me help you in English, is that okay?"
-5. FORMALITY: Match the user's formality. Use "aap" (formal you) by default. If the user speaks casually, you may become slightly more casual, but always remain professional.
-6. VOICE RULES: Never use bullet points, numbered lists, asterisks, or any text formatting. Speak in natural, flowing sentences as if on a real phone call. Keep each sentence under 20 words.
-
-Hinglish example phrases you can use:
-- "Aapka payment fail ho gaya, main samajh sakti hoon ye frustrating hota hai."
-- "Koi baat nahi, main aapki help karungi."
-- "Iske liye mujhe aapko ek specialist se connect karna hoga."
-- "Aap BharatPay app mein jaake UPI section check karein."
-
-# GUARDRAILS
-
-## HARD REFUSALS — Decline these immediately and firmly, every time, no exceptions:
-- NEVER ask for, accept, or repeat an OTP, PIN, CVV, password, or any part of an account number.
-- NEVER ask for an Aadhaar number, PAN number, or full date of birth over this call.
-- NEVER promise loan approval, a specific interest rate, credit limit increase, or fee waiver.
-- NEVER claim a refund or reversal has been processed — you have no access to transaction systems.
-- NEVER share internal system information, employee names, branch codes, or API details.
-- NEVER provide investment advice, stock recommendations, tax advice, or financial planning guidance.
-- NEVER impersonate a bank official, government officer, or RBI representative.
-
-If a user pushes you on any of these, say: "Main ye information is call par share nahi kar sakti — ye aapki security ke liye hai. Our specialist can assist you through a secure, verified channel."
-
-## NEVER-CLAIMS — Do not state these as facts:
-- Never state a user IS eligible for a loan — eligibility is determined by the system, not by you.
-- Never promise a refund will arrive within a specific number of days.
-- Never guarantee that UPI will work at a specific merchant, location, or bank.
-- Never state a transaction limit as fact unless you are certain it is current BharatPay policy.
-- Never claim BharatPay will waive any fee or penalty.
-- Never claim a complaint or ticket has been filed — you cannot verify this.
-
-## ESCALATION SCRIPT — Use this when the issue is beyond your scope:
-If account access, transaction reversal, loan processing, or a technical issue requiring system access is needed, say:
-"Main samajhti hoon ye urgent hai. Since I cannot access your account directly, main aapko apne specialist se connect karti hoon — who can resolve this for you. They are available 24 by 7. Aap unhe support at bharatpay dot in pe email kar sakte hain, ya 1800-123-4567 pe call kar sakte hain. Kya aap chahte hain main aapki problem note kar loon taaki they can call you back?"
-
-For RED FLAG situations — user mentions financial loss, fraud, or unauthorized transaction:
-Say immediately: "Ye bahut important hai. Please call our fraud helpline at 1800-123-4567 right now — they are available 24 hours and can freeze your account immediately to protect your money."
-
-# STYLE
-- On the VERY FIRST message, call the lookup_caller tool FIRST. If returning caller found, greet by name and reference last topic. If new caller, use the standard greeting.
-- Keep every sentence under 20 words.
-- Pause naturally between ideas — do not rush through information.
-- If the user is silent, wait a moment before prompting: "Kya aap still there hain?"
-- If you do not understand, say: "Sorry, kya aap dobara bata sakte hain? I want to make sure I understand correctly."
-- Acknowledge frustration first, then solve: "Main samajhti hoon ye frustrating hai" before jumping to the fix.
-- Never use emojis, asterisks, dashes, or any symbols in your spoken response.
-- Say "rupees" — never use the rupee symbol or "Rs." in speech.
-- Never ask the user to share sensitive credentials over this call — proactively reassure them you will not ask for OTP or PIN.
-- End the call warmly: "Koi aur sawaal ho toh please call karein. BharatPay mein aapka swagat hai."
-"""
-
-# ---------------------------------------------------------------------------
-# Standard first-time greeting (returning caller greeting is built dynamically)
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Inbound greetings (Day 1–5)
-# ---------------------------------------------------------------------------
-
-GREETING_NEW = (
-    "Namaste! Main hoon Pooja, BharatPay support se. "
-    "Main aapki help kar sakti hoon — UPI payments, wallet, account, loan, "
-    "ya sarkari schemes ke baare mein. "
-    "Aur don't worry — main kabhi bhi aapka OTP ya PIN nahi mangti. "
-    "Toh batao, aaj main aapki kya help kar sakti hoon?"
-)
+SAFETY & ESCALATION
+- Never ask for or store OTPs/UPI PINs/ATM PINs/CVVs/passwords/Aadhaar or full account numbers. Never transact or authorize payments, never guarantee returns/approvals/eligibility, never impersonate banks/officials, never fabricate facts.
+- For account-specific issues, suspected fraud, or regulated financial/tax/legal advice, explain the limit and refer to the bank, official customer support, RBI, or a qualified advisor.
+- Keep replies brief and conversational (1-3 short sentences). No markdown, emojis, or formatting."""
 
 
-def _build_returning_greeting(record: dict) -> str:
-    name = record.get("name") or "aap"
-    schemes = record.get("schemes_checked") or []
-    eligibility = record.get("eligibility_notes") or {}
+# ---------- Tool schemas ----------
+# Day-4 fix: the OpenAI/Groq strict tool schema validator requires every object
+# to declare `additionalProperties: false`. Pydantic turns a bare
+# `dict[str, object]` into an object with `additionalProperties: true`, which the
+# provider rejects, so both memory tools now ship an explicit `raw_schema`.
+#
+# `eligibility_answers` keys are dynamic from the caller's answers, but the
+# provider accepts no unconstrained object here. We bound the supported fields
+# explicitly and keep every one optional (`required: []`) so the agent never has
+# to fabricate an answer the caller didn't share.
+_ELIGIBILITY_ANSWERS_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "income_bracket": {
+            "type": "string",
+            "description": "The caller's income bracket, e.g. 'below 3 lakh'.",
+        },
+        "student": {
+            "type": "boolean",
+            "description": "Whether the caller is a student.",
+        },
+        "farmer": {
+            "type": "boolean",
+            "description": "Whether the caller is a farmer.",
+        },
+        "self_employed": {
+            "type": "boolean",
+            "description": "Whether the caller is self-employed.",
+        },
+        "senior_citizen": {
+            "type": "boolean",
+            "description": "Whether the caller is a senior citizen.",
+        },
+        "has_bank_account": {
+            "type": "boolean",
+            "description": "Whether the caller has a bank account.",
+        },
+    },
+    "required": [],
+}
 
-    # Build a natural reference to the last conversation
-    context_hint = ""
-    if schemes:
-        last_scheme = schemes[-1]
-        context_hint = f"Pichhli baar aapne {last_scheme} ke baare mein poochhha tha. "
-    elif eligibility:
-        first_key = next(iter(eligibility))
-        context_hint = f"Pichhli baar hum {first_key} ke baare mein baat kar rahe the. "
 
-    return (
-        f"Namaste {name}! Main hoon Pooja, BharatPay support se. "
-        f"Aapko phir sun ke achha laga. "
-        f"{context_hint}"
-        f"Aaj main aapki kya help kar sakti hoon?"
-    )
+def _pick_arg(raw: dict[str, object] | None, key: str, direct: object) -> object:
+    """Pick a tool argument from the LLM's raw JSON first, else the direct value.
 
-
-# ---------------------------------------------------------------------------
-# Day 6 — Outbound greetings
-# Rule: In first 2 sentences → who's calling, why, how to opt out
-# ---------------------------------------------------------------------------
-
-def _build_outbound_greeting(
-    scheme_name: str,
-    caller_name: str | None = None,
-) -> str:
+    Raw `@function_tool(raw_schema=...)` tools are invoked by LiveKit with the
+    whole arguments object as `raw_arguments`. Tests/direct callers use the named
+    parameters instead. This keeps both call styles working.
     """
-    Outbound opener following Day 6 rules:
-      Sentence 1: Who is calling + why
-      Sentence 2: How to make it stop (opt-out)
-    Then: the actual helpful message.
-    """
-    name_part = f"{caller_name} ji, " if caller_name else ""
-    return (
-        f"Namaste {name_part}main Pooja bol rahi hoon BharatPay ki taraf se — "
-        f"{scheme_name} ki enrollment deadline is hafte khatam ho rahi hai, "
-        f"aur hum chahte hain ki aap is mauke ko na chukein. "
-        f"Agar aap abhi baat nahi karna chahte, bas kehna 'band karo' aur main turant call khatam kar dungi. "
-        f"Kya main aapko is scheme ke baare mein thodi si jaankari de sakti hoon?"
-    )
+    if isinstance(raw, dict) and key in raw:
+        return raw[key]
+    return direct
 
-
-# ---------------------------------------------------------------------------
-# Agent class with Day 4 memory tools + Day 5 data tools
-# ---------------------------------------------------------------------------
 
 class Assistant(Agent):
-    def __init__(self, user_id: str, caller_record: dict | None) -> None:
+    def __init__(self) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
-        self._user_id = user_id
-        self._caller_record = caller_record  # pre-fetched before session start
+        self._user_language: tts_hindi.Language = "english"
 
-    # ------------------------------------------------------------------
-    # Day 4 — Tool 1: Look up a caller
-    # ------------------------------------------------------------------
-    @function_tool
-    async def lookup_caller_tool(
-        self,
-        context: RunContext,
-        user_id: str,
-    ) -> str:
-        """Look up whether we have a stored record for this caller.
+    async def on_user_turn_completed(
+        self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
+    ) -> None:
+        """Track the caller's language so the TTS node pronounces scheme names right."""
+        text = (new_message.text_content if new_message else None) or ""
+        self._user_language = tts_hindi.detect_language(text)
+        logger.info("[LANG] user language=%s input=%s", self._user_language, text[:120])
 
-        Call this at the very start of every session using the caller's session/room ID.
-        Returns a JSON string with the caller's profile, or a message saying they are new.
+    async def tts_node(self, text, model_settings):
+        """TTS node: rewrite final text to Devanagari for Hindi/Hinglish turns.
 
-        Args:
-            user_id: The unique identifier for this caller (room name or participant SID).
+        The phrase table in tts_hindi is a whitelist of known Hindi/Indian terms,
+        so it applies to every turn: a pure-English sentence is passed through
+        unchanged, while known schemes/terms (e.g. "PM Jan Dhan Yojana") are
+        converted to Devanagari even when the caller is English.
         """
-        logger.info("Tool: lookup_caller called for user_id=%s", user_id)
-        record = lookup_caller(user_id)
-        if record is None:
-            return json.dumps({"status": "new_caller", "user_id": user_id})
-        return json.dumps({"status": "returning_caller", "record": record})
+        language = self._tts_language()
+        tts_parts: list[str] = []
+        original_parts: list[str] = []
+        frames = 0
+        first_audio_at: float | None = None
+        started_at = time.perf_counter()
 
-    # ------------------------------------------------------------------
-    # Day 4 — Tool 2: Save caller info (consent required)
-    # ------------------------------------------------------------------
-    @function_tool
-    async def save_caller_info(
+        async def _capture_original(source):
+            async for part in source:
+                original_parts.append(part)
+                yield part
+
+        async def _tracked():
+            async for part in tts_hindi.stream_for_tts(
+                _capture_original(text), language=language
+            ):
+                tts_parts.append(part)
+                yield part
+
+        try:
+            async for frame in Agent.default.tts_node(self, _tracked(), model_settings):
+                frames += 1
+                if first_audio_at is None:
+                    first_audio_at = time.perf_counter() - started_at
+                yield frame
+            logger.info(
+                "[TTS] complete language=%s frames=%d first_audio=%.2fs duration=%.2fs "
+                "text_chars=%d",
+                language,
+                frames,
+                first_audio_at or 0.0,
+                time.perf_counter() - started_at,
+                len("".join(tts_parts)),
+            )
+            logger.info("[TTS] language=%s", language)
+            logger.info("[TTS] original=%s", "".join(original_parts))
+            logger.info("[TTS] transformed=%s", "".join(tts_parts))
+        except asyncio.CancelledError:
+            logger.info("[TTS] cancelled language=%s frames=%d", language, frames)
+            raise
+        except Exception as exc:
+            logger.error(
+                "[TTS] failed language=%s frames=%d err=%r", language, frames, exc
+            )
+            raise
+
+    def _tts_language(self) -> str:
+        lang = getattr(self, "_user_language", "english") or "english"
+        return lang if lang in ("hindi", "hinglish") else "english"
+
+    @function_tool(
+        raw_schema={
+            "name": "lookup_user",
+            "description": (
+                "Find the current caller in the database and return their saved "
+                "profile. Call this once at the very start of every conversation. "
+                "Returns the caller's saved name, language preference and any "
+                "relevant facts (e.g. schemes they already checked), or a JSON "
+                "object signalling that no saved profile exists. Takes no "
+                "arguments."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        }
+    )
+    async def lookup_user(
+        self, context: RunContext, raw_arguments: dict[str, object]
+    ) -> str:
+        """Find the current caller in the database and return their saved profile.
+
+        Call this once at the very start of every conversation.
+        Returns the caller's saved name, language preference and any relevant
+        facts (e.g. schemes they already checked), or a JSON object signalling
+        that no saved profile exists.
+
+        Returns:
+            A JSON string of the caller's saved memory, or
+            {"memory": "none"} when there is no saved profile or memory is unavailable.
+        """
+        user_id = _caller_user_id(context)
+        profile = memory.lookup_user(user_id)
+        if not profile:
+            return json.dumps({"memory": "none"}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "name": profile.get("name"),
+                "language_preference": profile.get("language_preference"),
+                "facts": profile.get("facts", {}),
+            },
+            ensure_ascii=False,
+        )
+
+    @function_tool(
+        raw_schema={
+            "name": "grant_user_memory_consent",
+            "description": (
+                "Record the caller's explicit spoken consent to remember specific "
+                "facts. Call this ONLY after the caller has clearly said YES to "
+                "you saving the information, in the current conversation. Pass "
+                "the EXACT values the caller agreed to, then call "
+                "save_user_memory() with the same values. save_user_memory() "
+                "refuses to persist anything that was not first granted here (or "
+                "is not already part of the caller's saved profile). WARNING: "
+                "merely stating a fact is NOT consent — ask first, and only call "
+                "this once the caller has affirmed they want it remembered."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [],
+                "properties": {
+                    "name": {
+                        "type": ["string", "null"],
+                        "description": "The caller's name they agreed to have "
+                        "remembered.",
+                    },
+                    "language_preference": {
+                        "type": ["string", "null"],
+                        "description": "Their preferred language ('English', "
+                        "'Hindi', 'Hinglish') they agreed to have remembered.",
+                    },
+                    "scheme_checked": {
+                        "type": ["string", "null"],
+                        "description": "A scheme the caller agreed to have "
+                        "remembered they already checked, e.g. 'PM Jan Dhan "
+                        "Yojana'.",
+                    },
+                    "note": {
+                        "type": ["string", "null"],
+                        "description": "Any non-sensitive caller fact they "
+                        "agreed to have remembered.",
+                    },
+                    "eligibility_answers": {
+                        **_ELIGIBILITY_ANSWERS_SCHEMA,
+                        "description": "Eligibility details (e.g. income, "
+                        "student status) the caller agreed to have remembered. "
+                        "Only include values the caller explicitly shared.",
+                    },
+                },
+            },
+        }
+    )
+    async def grant_user_memory_consent(
         self,
         context: RunContext,
-        user_id: str,
+        raw_arguments: dict[str, object] | None = None,
+        language_preference: str | None = None,
         name: str | None = None,
-        language_pref: str | None = None,
-        schemes_checked: list[str] | None = None,
-        eligibility_notes: dict | None = None,
+        note: str | None = None,
+        scheme_checked: str | None = None,
+        eligibility_answers: dict[str, object] | None = None,
     ) -> str:
-        """Save information about the caller AFTER they have given explicit consent.
+        """Record the caller's explicit spoken consent to remember specific facts.
 
-        IMPORTANT: You MUST ask the caller for consent before calling this tool.
-        NEVER save: account numbers, Aadhaar, PAN, OTPs, PINs, or monetary amounts.
-        SAFE to save: name, language preference, scheme names discussed, general eligibility flags.
+        Call this ONLY after the caller has clearly said YES to you saving the
+        information, in the current conversation. Pass the EXACT values the
+        caller agreed to. Then call save_user_memory() with the same
+        values.
 
         Args:
-            user_id: Unique caller identifier (room name or participant SID).
-            name: The caller's preferred first name.
-            language_pref: Language they prefer — "hi", "en", or "hi-en" for Hinglish.
-            schemes_checked: List of BharatPay scheme or product names discussed (e.g. ["Personal Loan", "BharatPay Lite"]).
-            eligibility_notes: Key-value pairs of eligibility facts (e.g. {"has_existing_loan": "yes", "employment_type": "self-employed"}).
+            raw_arguments: The raw arguments object from the LLM (used for
+                @function_tool(raw_schema=...) calls).
+            name: The caller's name they agreed to have remembered.
+            language_preference: Their preferred language ("English", "Hindi",
+                "Hinglish") they agreed to have remembered.
+            scheme_checked: A scheme the caller agreed to have remembered they
+                already checked, e.g. "PM Jan Dhan Yojana".
+            note: Any non-sensitive caller fact they agreed to have remembered.
+            eligibility_answers: Eligibility details (e.g. income, student
+                status) the caller agreed to have remembered.
         """
+        language_preference = _pick_arg(
+            raw_arguments, "language_preference", language_preference
+        )
+        name = _pick_arg(raw_arguments, "name", name)
+        scheme_checked = _pick_arg(raw_arguments, "scheme_checked", scheme_checked)
+        note = _pick_arg(raw_arguments, "note", note)
+        if not isinstance(language_preference, str):
+            language_preference = None
+        if not isinstance(name, str):
+            name = None
+        if not isinstance(scheme_checked, str):
+            scheme_checked = None
+        if not isinstance(note, str):
+            note = None
+        picked_eligibility = _pick_arg(
+            raw_arguments, "eligibility_answers", eligibility_answers
+        )
+        eligibility_answers = (
+            dict(picked_eligibility) if isinstance(picked_eligibility, dict) else None
+        )
+        data = _session_userdata(context)
+        if not isinstance(data, dict):
+            return "Consent cannot be recorded in this session."
+
+        consent = data.setdefault(_CONSENT_KEY, {})
+        for scope, value in (
+            ("name", name),
+            ("language_preference", language_preference),
+            ("scheme_checked", scheme_checked),
+        ):
+            if value is None:
+                continue
+            values = consent.setdefault(scope, [])
+            if not isinstance(values, list):
+                values = []
+                consent[scope] = values
+            if value not in values:
+                values.append(value)
+        if note is not None:
+            consent["note"] = True
+        if eligibility_answers:
+            consent["eligibility_answers"] = True
+
         logger.info(
-            "Tool: save_caller_info called for user_id=%s  name=%s  schemes=%s",
-            user_id,
+            "[MEMORY] caller consent recorded name=%r lang=%r schemes=%r",
             name,
-            schemes_checked,
+            language_preference,
+            scheme_checked,
         )
-        record = save_caller(
-            user_id=user_id,
-            name=name,
-            language_pref=language_pref,
-            schemes_checked=schemes_checked,
-            eligibility_notes=eligibility_notes,
-            consent_given=True,
+        return (
+            "Consent recorded for this conversation. You may now call "
+            "save_user_memory() with the same values to persist them."
         )
-        return json.dumps({"status": "saved", "record": record})
 
-    # ------------------------------------------------------------------
-    # Day 5 — Tool 3: Live USD/INR exchange rate
-    # ------------------------------------------------------------------
-    @function_tool
-    async def get_usd_inr_rate(
+    @function_tool(
+        raw_schema={
+            "name": "save_user_memory",
+            "description": (
+                "Create or update the current caller's saved memory in the "
+                "database. Refuses to save anything new unless the caller has "
+                "explicitly consented in the CURRENT conversation: first call "
+                "grant_user_memory_consent() with the exact same values after "
+                "the caller says YES, then call this with the same values. "
+                "Information already in the caller's saved profile needs no "
+                "second consent. Missing arguments are left unchanged and new "
+                "facts are merged with any existing facts so a returning caller "
+                "is never duplicated."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [],
+                "properties": {
+                    "name": {
+                        "type": ["string", "null"],
+                        "description": "The caller's name.",
+                    },
+                    "language_preference": {
+                        "type": ["string", "null"],
+                        "description": "The caller's preferred language, e.g. "
+                        "'English', 'Hindi', or 'Hinglish'.",
+                    },
+                    "scheme_checked": {
+                        "type": ["string", "null"],
+                        "description": "The name of a government/savings scheme "
+                        "the caller has already checked, e.g. 'PM Jan Dhan "
+                        "Yojana'. Stored under facts.schemes_checked.",
+                    },
+                    "eligibility_answers": {
+                        **_ELIGIBILITY_ANSWERS_SCHEMA,
+                        "description": "Eligibility details the caller shared, "
+                        "e.g. {'income_bracket': 'below 3 lakh', 'student': "
+                        "true}. Stored under facts.eligibility_answers.",
+                    },
+                    "note": {
+                        "type": ["string", "null"],
+                        "description": "Any other short, non-sensitive fact "
+                        "worth remembering, e.g. 'caller is a rural small "
+                        "farmer'. Never store bank account numbers, UPI IDs, "
+                        "OTPs, PINs, card details, or Aadhaar/PAN numbers.",
+                    },
+                },
+            },
+        }
+    )
+    async def save_user_memory(
         self,
         context: RunContext,
+        raw_arguments: dict[str, object] | None = None,
+        language_preference: str | None = None,
+        name: str | None = None,
+        note: str | None = None,
+        scheme_checked: str | None = None,
+        eligibility_answers: dict[str, object] | None = None,
     ) -> str:
-        """Fetch the current USD to INR exchange rate from a live public source.
+        """Create or update the current caller's saved memory in the database.
 
-        Call this when the user asks about:
-        - Dollar to rupee conversion
-        - Sending or receiving money from abroad (remittance)
-        - Foreign currency rates in general
-
-        The tool will tell you whether the data is live or a fallback.
-        ALWAYS tell the user when the rate is from (the 'data_as_of' field in the response).
-        If the response has status='fallback', say so clearly and recommend the user
-        verify with their bank or RBI's website.
-        """
-        logger.info("Tool: get_usd_inr_rate called")
-        return await get_usd_inr_rate_impl()
-
-    # ------------------------------------------------------------------
-    # Day 5 — Tool 4: RBI repo rate + BharatPay loan APR
-    # ------------------------------------------------------------------
-    @function_tool
-    async def get_lending_rates(
-        self,
-        context: RunContext,
-    ) -> str:
-        """Get the current RBI Repo Rate and BharatPay personal loan interest rate range.
-
-        Call this when the user asks about:
-        - Home loan or personal loan interest rates
-        - RBI policy rate or repo rate
-        - How much interest BharatPay charges on loans
-        - EMI estimates or loan cost calculations
-        - Documents required for a BharatPay loan
-
-        Data is sourced from a verified local dataset compiled from RBI press releases.
-        Always tell the user the 'last_verified' date from the response so they know
-        how current the information is.
-        """
-        logger.info("Tool: get_lending_rates called")
-        return get_lending_rates_impl()
-
-    # ------------------------------------------------------------------
-    # Day 5 — Tool 5: Government scheme eligibility check
-    # ------------------------------------------------------------------
-    @function_tool
-    async def check_scheme_eligibility(
-        self,
-        context: RunContext,
-        age: int,
-        has_bank_account: bool,
-        is_msme_owner: bool = False,
-        is_income_tax_payer: bool = False,
-    ) -> str:
-        """Check which Indian government financial schemes the caller likely qualifies for.
-
-        Call this ONLY after you have collected ALL of the following facts conversationally:
-        - age: the caller's age in years (integer)
-        - has_bank_account: whether they already have a savings bank account
-        - is_msme_owner: whether they own or run a small/micro/medium business
-        - is_income_tax_payer: whether they file income tax returns
-
-        Schemes checked: PM Mudra Yojana, PM Jan Dhan Yojana, PMSBY (accident insurance),
-        PMJJBY (life insurance), Atal Pension Yojana.
-
-        The result includes a 'spoken_summary' field — use that text to tell the user
-        what schemes they qualify for. Always add the caveat that this is a preliminary check
-        and they should confirm eligibility at a bank branch or myscheme.gov.in.
+        This tool refuses to save anything new unless the caller has explicitly
+        consented in the CURRENT conversation: first call
+        grant_user_memory_consent() with the exact values after the caller says
+        YES, then call this with the same values. Information that is already in
+        the caller's saved profile needs no second consent. Missing arguments
+        are left unchanged, and new facts are merged with any existing facts so
+        a returning caller is never duplicated.
 
         Args:
-            age: Caller's age in complete years.
-            has_bank_account: True if the caller has any savings bank account.
-            is_msme_owner: True if caller owns or runs a small/micro/medium enterprise.
-            is_income_tax_payer: True if caller files income tax returns.
+            raw_arguments: The raw arguments object from the LLM (used for
+                @function_tool(raw_schema=...) calls).
+            name: The caller's name.
+            language_preference: The caller's preferred language, e.g. "English",
+                "Hindi", or "Hinglish".
+            scheme_checked: The name of a government/savings scheme the caller
+                has already checked, e.g. "PM Jan Dhan Yojana". Stored under
+                facts.schemes_checked.
+            eligibility_answers: Eligibility details the caller shared, e.g.
+                {"income_bracket": "below 3 lakh", "student": true}. Stored
+                under facts.eligibility_answers.
+            note: Any other short, non-sensitive fact worth remembering, e.g.
+                "caller is a rural small farmer". Never pass bank account
+                numbers, UPI IDs, OTPs, PINs, card details, or Aadhaar/PAN numbers.
         """
-        logger.info(
-            "Tool: check_scheme_eligibility called  age=%s  bank=%s  msme=%s  taxpayer=%s",
-            age, has_bank_account, is_msme_owner, is_income_tax_payer,
+        language_preference = _pick_arg(
+            raw_arguments, "language_preference", language_preference
         )
-        return check_scheme_eligibility_impl(
+        name = _pick_arg(raw_arguments, "name", name)
+        scheme_checked = _pick_arg(raw_arguments, "scheme_checked", scheme_checked)
+        note = _pick_arg(raw_arguments, "note", note)
+        if not isinstance(language_preference, str):
+            language_preference = None
+        if not isinstance(name, str):
+            name = None
+        if not isinstance(scheme_checked, str):
+            scheme_checked = None
+        if not isinstance(note, str):
+            note = None
+        picked_eligibility = _pick_arg(
+            raw_arguments, "eligibility_answers", eligibility_answers
+        )
+        eligibility_answers = (
+            dict(picked_eligibility) if isinstance(picked_eligibility, dict) else None
+        )
+        user_id = _caller_user_id(context)
+        if not user_id:
+            return "Memory is unavailable right now, so nothing was saved."
+
+        data = _session_userdata(context)
+        consent = data.get(_CONSENT_KEY, {}) if isinstance(data, dict) else {}
+        if not isinstance(consent, dict):
+            consent = {}
+
+        blocked: list[str] = []
+        current = memory.lookup_user(user_id) or {}
+        current_facts = current.get("facts", {}) if isinstance(current, dict) else {}
+        if not isinstance(current_facts, dict):
+            current_facts = {}
+
+        if name is not None:
+            saved_name = current.get("name")
+            if name != saved_name and not _consent_covers(consent, "name", name):
+                blocked.append(f"name ({name})")
+                name = None
+
+        if language_preference is not None:
+            saved_lang = current.get("language_preference")
+            if language_preference != saved_lang and not _consent_covers(
+                consent, "language_preference", language_preference
+            ):
+                blocked.append(f"language preference ({language_preference})")
+                language_preference = None
+
+        if scheme_checked:
+            saved_schemes = current_facts.get("schemes_checked", []) or []
+            if scheme_checked not in saved_schemes and not _consent_covers(
+                consent, "scheme_checked", scheme_checked
+            ):
+                blocked.append(f"scheme ({scheme_checked})")
+                scheme_checked = None
+
+        if note:
+            saved_notes = current_facts.get("notes", []) or []
+            if note not in saved_notes and not _consent_covers(consent, "note", note):
+                blocked.append("note")
+                note = None
+
+        if eligibility_answers and not _consent_covers(
+            consent, "eligibility_answers", None
+        ):
+            blocked.append("eligibility details")
+            eligibility_answers = None
+
+        facts: dict[str, object] | None = None
+        if scheme_checked or note or eligibility_answers:
+            facts = {}
+            if scheme_checked:
+                facts["schemes_checked"] = [scheme_checked]
+            if note:
+                facts["notes"] = [note]
+            if eligibility_answers:
+                facts["eligibility_answers"] = dict(eligibility_answers)
+
+        has_save = any(
+            value is not None
+            for value in (
+                name,
+                language_preference,
+                scheme_checked,
+                note,
+                eligibility_answers,
+            )
+        )
+        if not has_save and not facts:
+            if blocked:
+                return (
+                    "Nothing was saved without the caller's consent for: "
+                    + ", ".join(blocked)
+                    + ". If the caller has ALREADY agreed IN THIS "
+                    "conversation, first call grant_user_memory_consent() with "
+                    "the exact same values and then call save_user_memory() again "
+                    "with them — do not ask again. If the caller has NOT agreed "
+                    "yet, ask them first and only save after an explicit YES."
+                )
+            return "Nothing to save would be different from what is already saved."
+
+        saved = memory.save_user_memory(
+            user_id,
+            name=name,
+            language_preference=language_preference,
+            facts=facts,
+        )
+        if not saved:
+            return "Memory is unavailable right now, so nothing was saved."
+        if blocked:
+            return (
+                "Caller memory saved for the consented details. Not saved because "
+                "consent was not granted: "
+                + ", ".join(blocked)
+                + ". If the caller already agreed IN THIS conversation, call "
+                "grant_user_memory_consent() with those values, then save again. "
+                "Otherwise ask first and only save after an explicit YES."
+            )
+        return "Caller memory saved."
+
+    @function_tool(
+        raw_schema={
+            "name": "find_eligible_schemes",
+            "description": (
+                "Check which Indian government schemes a caller may be eligible "
+                "for by matching their profile against a local public dataset of "
+                "Indian government schemes. Call this ONLY when the caller asks "
+                "for a personalized eligibility check or scheme recommendation "
+                "based on their own profile, e.g. 'what government schemes can I "
+                "get?', 'which schemes am I eligible for?', 'are there schemes "
+                "for someone like me?', 'check schemes for my profile'. Do NOT "
+                "call it for generic questions about what a scheme does (e.g. "
+                "'what is PM Jan Dhan Yojana?') or for general scheme "
+                "explanations. Pass only facts the caller actually shared: age "
+                "(years), state (e.g. 'Delhi'), annual_income (rupees), gender "
+                "('male'/'female'), occupation, student (true/false), "
+                "caste/social_category ('SC'/'ST'/'OBC'/'General'), residence "
+                "('rural'/'urban'), disability (true/false), bpl (true/false). "
+                "Never fabricate or guess a field. If a useful field is missing "
+                "— especially state, age, or income — ask the caller for it "
+                "first, then call this tool. Returns a small set of PRELIMINARY "
+                "matches (name, category, reason, benefits, documents, official "
+                "URL) plus the dataset source and collection date; it is NOT a "
+                "live government API and never guarantees official eligibility. "
+                "DISCLAIMER — ONCE, CONVERSATIONALLY: on the FIRST successful "
+                "scheme lookup in this conversation, briefly tell the caller the "
+                "information comes from the public scheme dataset, say when it "
+                "was collected from the 'data_as_of' field (e.g. 'collected on "
+                "5 July 2026'), make clear it is not live or real-time and "
+                "details may have changed, and advise verifying current details "
+                "on the official scheme page before applying. Do NOT repeat "
+                "that disclaimer (dataset date, source, non-live warning, verify "
+                "advice) on later responses; keep answering naturally using the "
+                "returned scheme data. Only provide the dataset source and date "
+                "again if the caller explicitly asks where the data is from, "
+                "how recent it is, or whether it is live. If a new scheme "
+                "lookup happens later in the same conversation, do not "
+                "automatically repeat the full disclaimer; mention the metadata "
+                "again only if it is genuinely needed for clarity. "
+                "FAILURE HANDLING: if the result has status 'error', the scheme "
+                "data is unavailable. Say ONLY that you are unable to check the "
+                "scheme information right now and don't want to give an "
+                "incorrect answer, and offer to check again later. Do NOT "
+                "speculate about schemes, scholarships, benefits, portals, or "
+                "eligibility — not even in general terms. Never invent schemes "
+                "or eligibility criteria. If the result has status 'success' "
+                "but no matches, say clearly that no matching schemes were "
+                "found for their profile."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [],
+                "properties": {
+                    "age": {
+                        "type": "integer",
+                        "description": "The caller's age in years.",
+                    },
+                    "state": {
+                        "type": "string",
+                        "description": "The caller's state, e.g. 'Delhi' or "
+                        "'Karnataka'.",
+                    },
+                    "annual_income": {
+                        "type": "integer",
+                        "description": "The caller's family/annual income in "
+                        "rupees, e.g. 300000.",
+                    },
+                    "gender": {
+                        "type": "string",
+                        "enum": ["male", "female"],
+                        "description": "The caller's gender.",
+                    },
+                    "occupation": {
+                        "type": "string",
+                        "description": "The caller's occupation, e.g. 'student', "
+                        "'farmer', 'street vendor'.",
+                    },
+                    "student": {
+                        "type": "boolean",
+                        "description": "Whether the caller is a student.",
+                    },
+                    "caste": {
+                        "type": "string",
+                        "enum": ["SC", "ST", "OBC", "General"],
+                        "description": "The caller's social category, e.g. "
+                        "'SC', 'ST', 'OBC', or 'General'.",
+                    },
+                    "residence": {
+                        "type": "string",
+                        "enum": ["rural", "urban"],
+                        "description": "Whether the caller lives in a rural or "
+                        "urban area.",
+                    },
+                    "disability": {
+                        "type": "boolean",
+                        "description": "Whether the caller has a disability status.",
+                    },
+                    "bpl": {
+                        "type": "boolean",
+                        "description": "Whether the caller's family is Below "
+                        "Poverty Line (BPL).",
+                    },
+                },
+            },
+        }
+    )
+    async def find_eligible_schemes(
+        self,
+        context: RunContext,
+        raw_arguments: dict[str, object] | None = None,
+        age: object | None = None,
+        state: object | None = None,
+        annual_income: object | None = None,
+        gender: object | None = None,
+        occupation: object | None = None,
+        student: object | None = None,
+        caste: object | None = None,
+        residence: object | None = None,
+        disability: object | None = None,
+        bpl: object | None = None,
+    ) -> str:
+        """Match the caller's profile against the local schemes dataset.
+
+        Call this only for a personalized "which schemes am I eligible for?"
+        question, with exactly the facts the caller shared (nothing invented).
+        Returns a JSON string with a small set of preliminary matches plus the
+        dataset source and collection date — or a controlled error / empty
+        result. Never raises.
+        """
+        age = _pick_arg(raw_arguments, "age", age)
+        state = _pick_arg(raw_arguments, "state", state)
+        annual_income = _pick_arg(raw_arguments, "annual_income", annual_income)
+        gender = _pick_arg(raw_arguments, "gender", gender)
+        occupation = _pick_arg(raw_arguments, "occupation", occupation)
+        student = _pick_arg(raw_arguments, "student", student)
+        caste = _pick_arg(raw_arguments, "caste", caste)
+        residence = _pick_arg(raw_arguments, "residence", residence)
+        disability = _pick_arg(raw_arguments, "disability", disability)
+        bpl = _pick_arg(raw_arguments, "bpl", bpl)
+
+        result = schemes.find_eligible_schemes(
             age=age,
-            has_bank_account=has_bank_account,
-            is_msme_owner=is_msme_owner,
-            is_income_tax_payer=is_income_tax_payer,
+            state=state,
+            annual_income=annual_income,
+            gender=gender,
+            occupation=occupation,
+            student=student,
+            caste=caste,
+            residence=residence,
+            disability=disability,
+            bpl=bpl,
         )
+        return json.dumps(result, ensure_ascii=False)
 
-
-# ---------------------------------------------------------------------------
-# LiveKit server wiring
-# ---------------------------------------------------------------------------
 
 server = AgentServer()
+
+
+_CONSENT_KEY = "consent"
+
+
+def _session_userdata(context: RunContext) -> dict:
+    """Per-call session state carried across turns in this conversation."""
+    try:
+        data = context.userdata
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _consent_covers(consent: dict, scope: str, value: object) -> bool:
+    """True when the caller granted consent for `scope` (with an exact `value`
+    for value-scoped scopes: name, language_preference, scheme_checked).
+
+    `note` and `eligibility_answers` are group scopes: once the caller agrees to
+    remembering "those details" they cover all later save attempts for that
+    scope. Value scopes must match the exact value the caller agreed to.
+    """
+    granted = consent.get(scope)
+    if scope in ("name", "language_preference", "scheme_checked"):
+        return isinstance(granted, list) and value in granted
+    return bool(granted)
+
+
+def _caller_user_id(context: RunContext) -> str:
+    """Extract the persistent caller ID from the session userdata."""
+    try:
+        data = context.userdata
+    except Exception:
+        return ""
+    if isinstance(data, dict):
+        uid = data.get("user_id")
+        if isinstance(uid, str) and uid:
+            return uid
+    return ""
+
+
+async def _discover_user_id(ctx: JobContext) -> str:
+    """Read the persistent user_id the frontend attached to the caller's participant.
+
+    The browser sends it via participant attributes, which the agent worker sees
+    on the remote participant after connecting. If it's missing (older sessions,
+    test harness, console mode) we fall back to a random ID so calls still work.
+    """
+    for _ in range(40):
+        for participant in ctx.room.remote_participants.values():
+            if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_AGENT:
+                continue
+            uid = (participant.attributes or {}).get("user_id")
+            if uid:
+                logger.info("identified caller: %s", uid)
+                return uid
+        await asyncio.sleep(0.25)
+    logger.info("no caller user_id received, falling back to a random id")
+    return str(uuid.uuid4())
 
 
 def prewarm(proc: JobProcess):
@@ -441,69 +826,111 @@ def prewarm(proc: JobProcess):
 server.setup_fnc = prewarm
 
 
-@server.rtc_session(agent_name="pooja-voice")
+@server.rtc_session(agent_name="moneygpt-voice")
 async def my_agent(ctx: JobContext):
-    ctx.log_context_fields = {"room": ctx.room.name}
+    # Logging setup
+    # Add any other context you want in all log entries here
+    ctx.log_context_fields = {
+        "room": ctx.room.name,
+    }
 
-    # ------------------------------------------------------------------
-    # Day 6 — Detect outbound call from job metadata
-    # outbound_caller.py injects JSON metadata into the agent dispatch.
-    # ------------------------------------------------------------------
-    import json as _json
-    outbound_meta: dict = {}
-    raw_meta = getattr(ctx.job, "metadata", None) or ""
-    if raw_meta:
-        try:
-            outbound_meta = _json.loads(raw_meta)
-        except Exception:
-            logger.warning("Could not parse job metadata: %s", raw_meta)
+    # Per-session caller identity (persistent browser ID, see Day 4). The tools
+    # in `Assistant` read it from `userdata` — it is filled in after connect.
+    userdata = {"user_id": ""}
 
-    is_outbound = outbound_meta.get("call_type") == "outbound"
-    outbound_scheme = outbound_meta.get("scheme_name", "PM Mudra Yojana")
-    outbound_caller_name = outbound_meta.get("caller_name") or None
-    outbound_phone = outbound_meta.get("caller_phone", "")
+    # Cap LLM output. Voice replies are short, and LiveKit Inference has no
+    # Groq-style per-minute token cap to guard against, so a modest cap simply
+    # keeps replies brief and responsive for frequent short voice turns.
+    max_output_tokens = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024"))
 
-    # ------------------------------------------------------------------
-    # Memory look-up BEFORE session starts
-    # For outbound calls use the phone number as the caller ID;
-    # for inbound use the room name (stable per session).
-    # ------------------------------------------------------------------
-    user_id = outbound_phone if (is_outbound and outbound_phone) else ctx.room.name
-    caller_record = lookup_caller(user_id)
-
-    if is_outbound:
-        greeting = _build_outbound_greeting(
-            scheme_name=outbound_scheme,
-            caller_name=outbound_caller_name,
-        )
-        logger.info(
-            "OUTBOUND call → phone=%s  scheme=%s  name=%s",
-            outbound_phone, outbound_scheme, outbound_caller_name,
-        )
-    elif caller_record and caller_record.get("consent_given"):
-        greeting = _build_returning_greeting(caller_record)
-        logger.info("Returning caller detected: %s", caller_record.get("name"))
-    else:
-        greeting = GREETING_NEW
-        logger.info("New caller session: user_id=%s", user_id)
-
+    # Set up a voice AI pipeline using Murf Falcon, Gemini via LiveKit Inference,
+    # Deepgram, and the LiveKit turn detector
     session = AgentSession(
+        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
+        # See all available models at https://docs.livekit.io/agents/models/stt/
         stt=deepgram.STT(model="nova-3", language="multi"),
-        llm=google.LLM(model="gemini-1.5-flash"),
+        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
+        # LiveKit Inference serves Gemini on LiveKit's infrastructure (no API key needed).
+        # See all available models at https://docs.livekit.io/agents/models/llm/
+        llm=inference.LLM(
+            model="google/gemini-3.5-flash-lite",
+            extra_kwargs={"max_completion_tokens": max_output_tokens},
+        ),
+        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
+        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
         tts=murf.TTS(
-            voice="Pooja",
+            voice="Anisha",
             locale="en-IN",
-            style="Conversational",
+            style="Conversation",
             tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
             text_pacing=True,
         ),
+        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
+        # See more at https://docs.livekit.io/agents/build/turns
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
+        # allow the LLM to generate a response while waiting for the end of turn
+        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
+        # Per-call caller context (persistent user_id) exposed to tools via RunContext.userdata
+        userdata=userdata,
     )
 
+    def _on_metrics(ev) -> None:
+        m = ev.metrics
+        if m.type == "llm_metrics":
+            model = m.metadata.model_name if m.metadata else "-"
+            logger.info(
+                "[LLM] metrics model=%s ttft=%.2fs duration=%.2fs prompt=%d "
+                "completion=%d cached=%d total=%d cancelled=%s",
+                model,
+                m.ttft,
+                m.duration,
+                m.prompt_tokens,
+                m.completion_tokens,
+                m.prompt_cached_tokens,
+                m.total_tokens,
+                m.cancelled,
+            )
+        elif m.type == "tts_metrics":
+            logger.info(
+                "[TTS] metrics ttfb=%.2fs duration=%.2fs audio=%.2fs chars=%d "
+                "cancelled=%s",
+                m.ttfb,
+                m.duration,
+                m.audio_duration,
+                m.characters_count,
+                m.cancelled,
+            )
+
+    def _on_user_input(ev) -> None:
+        if ev.is_final:
+            logger.info("[STT] user said: %s", ev.transcript)
+
+    def _on_error(ev) -> None:
+        logger.error("[ERROR] source=%s error=%r", type(ev.source).__name__, ev.error)
+
+    def _on_close(ev) -> None:
+        logger.info("[CALL] session closed reason=%s error=%r", ev.reason, ev.error)
+
+    session.on("metrics_collected", _on_metrics)
+    session.on("user_input_transcribed", _on_user_input)
+    session.on("error", _on_error)
+    session.on("close", _on_close)
+
+    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
+    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
+    # 1. Install livekit-agents[openai]
+    # 2. Set OPENAI_API_KEY in .env.local
+    # 3. Add `from livekit.plugins import openai` to the top of this file
+    # 4. Use the following session setup instead of the version above
+    # session = AgentSession(
+    #     llm=openai.realtime.RealtimeModel(voice="marin")
+    # )
+
+    # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(user_id=user_id, caller_record=caller_record),
+        agent=Assistant(),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -517,10 +944,13 @@ async def my_agent(ctx: JobContext):
         ),
     )
 
+    # Join the room and connect to the user
     await ctx.connect()
 
-    # Speak the appropriate greeting (outbound / returning / new)
-    await session.say(greeting)
+    # The browser sends the persistent user_id as a participant attribute — read
+    # it now that we are connected so the memory tools can identify this caller.
+    userdata["user_id"] = await _discover_user_id(ctx)
+    ctx.log_context_fields["user_id"] = userdata["user_id"]
 
 
 if __name__ == "__main__":

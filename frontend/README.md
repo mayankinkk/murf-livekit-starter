@@ -1,6 +1,6 @@
-# Frontend — Voice Agent UI
+# Frontend — RupeeGPT Voice UI
 
-The React/Next.js frontend for the Voice Agent Starter. Built with [LiveKit Agents UI](https://livekit.io/ui) components, it provides a polished interface for real-time voice conversations with your agent.
+The React/Next.js frontend for the RupeeGPT Voice agent. Built with [LiveKit Agents UI](https://livekit.io/ui) components, it provides a polished interface for real-time voice conversations with your agent.
 
 ### Features
 
@@ -32,7 +32,7 @@ Fill in your LiveKit credentials (same project as the backend):
 LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=your_key
 LIVEKIT_API_SECRET=your_secret
-AGENT_NAME=my-agent
+AGENT_NAME=moneygpt-voice
 ```
 
 ### 3. Run
@@ -51,19 +51,21 @@ Edit [`app-config.ts`](app-config.ts) to change branding, features, and button t
 
 ```ts
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'Murf AI',
-  pageTitle: 'Voice Agent Starter',
-  pageDescription: 'A voice agent powered by Murf Falcon — the fastest TTS API',
+  companyName: 'RupeeGPT Voice',
+  pageTitle: 'RupeeGPT Voice',
+  pageDescription:
+    'Your AI financial voice assistant for India — banking, UPI, savings, loans and financial safety.',
 
   supportsChatInput: true,
   supportsVideoInput: true,
   supportsScreenShare: true,
 
-  logo: '/murf-logo.svg',
-  accent: '#6366F1',
-  logoDark: '/murf-logo-dark.svg',
-  accentDark: '#818cf8',
-  startButtonText: 'Start talking',
+  logo: '/rupegpt-logo.svg',
+  accent: '#7C3AED',
+  logoDark: '/rupegpt-logo.svg',
+  accentDark: '#8B5CF6',
+  startButtonText: 'Start RupeeGPT',
+  audioVisualizerType: 'bar',
 
   agentName: process.env.AGENT_NAME ?? undefined,
 };

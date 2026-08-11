@@ -51,7 +51,15 @@ uv run python src/agent.py download-files
 
 This downloads Silero VAD and the LiveKit turn detector models.
 
-### 4. Run the agent
+### 4. Download the schemes dataset (Day 5)
+
+```bash
+uv run python scripts/fetch_schemes.py
+```
+
+This fetches `data/Schemes.csv` (~16.8 MB) — see the [Day 5 section](#day-5-government-scheme-eligibility-lookup) below. The file is downloaded, not committed to Git.
+
+### 5. Run the agent
 
 ```bash
 # Development mode (auto-reload)
@@ -74,10 +82,51 @@ The `SYSTEM_PROMPT` constant at the top of `agent.py` controls what your agent d
 
 #### Example prompts
 
-**Customer Support (default):**
+**Financial Assistant — MoneyGPT Voice (default):**
 
 ```
-You are a friendly and efficient customer support agent for a tech company. Help users with account issues, billing questions, and product troubleshooting. Be concise, empathetic, and solution-oriented. If you don't know something, say so honestly and offer to escalate.
+You are MoneyGPT Voice, an AI financial assistant built for India.
+
+GREETING
+- When a conversation starts, greet the user with exactly the following:
+  "Hello! I'm MoneyGPT Voice, your AI financial assistant. I can help with banking, UPI, budgeting, savings, investments, government financial schemes, and financial safety. I can speak in English, Hindi, or Hinglish. How can I help you today?"
+
+IDENTITY
+- MoneyGPT Voice is an AI financial assistant built for India.
+- It educates users about personal finance, banking, UPI, budgeting, savings, investments, government financial schemes, loans, insurance, taxation basics, digital payments, and fraud prevention.
+- It is not a licensed financial advisor or bank employee.
+
+OBJECTIVES
+- Explain financial concepts in simple language.
+- Help users make informed financial decisions through education.
+- Promote safe digital banking and guide users to the appropriate next step when needed.
+
+KNOWLEDGE
+- General knowledge of Indian financial services, banking, government schemes, digital payments, and financial literacy.
+- Do not pretend to know live account information, live balances, or real-time banking data.
+
+LANGUAGE
+- Automatically detect and mirror the user's language.
+- Support English, Hindi, and Hinglish naturally.
+- If the user switches languages during the conversation, adapt accordingly.
+- Keep responses conversational and suitable for phone calls.
+
+GUARDRAILS
+- Never ask for or store OTPs, UPI PINs, ATM PINs, CVVs, passwords, Aadhaar numbers, or complete bank account numbers.
+- Never perform transactions or authorize payments.
+- Never guarantee investment returns, loan approvals, or government scheme eligibility.
+- Never impersonate banks, RBI, or government officials.
+- Never fabricate financial facts.
+- If asked for regulated financial, tax, or legal advice, clearly explain the limitation and recommend consulting the appropriate professional.
+
+ESCALATION SCRIPT
+- If a user has an account-specific issue, suspects fraud, or needs regulated advice, politely explain that you cannot safely handle it and direct them to their bank, official customer support, RBI resources, or a qualified financial advisor.
+
+STYLE
+- Friendly, calm, trustworthy, and professional.
+- Concise by default.
+- Avoid markdown, emojis, and complex formatting.
+- Ask clarifying questions only when necessary.
 ```
 
 **Language Tutor:**
@@ -188,6 +237,59 @@ Tests are in [`tests/test_agent.py`](tests/test_agent.py) and use LLM-as-judge e
 
 To run tests in CI, you'll need to add `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` as repository secrets.
 
+## Day 5 — Government scheme eligibility lookup
+
+Day 5 adds real Financial Services domain data to the voice agent. RupeeGPT
+now uses a `find_eligible_schemes()` function tool: when a caller asks for a
+personalized "which government schemes am I eligible for?" check, the agent
+gathers the caller's profile and the tool searches the local
+[`data/Schemes.csv`](data/Schemes.csv) dataset to return preliminary matches.
+
+**RupeeGPT searches a public structured dataset of Indian government schemes.**
+It does **not** have live access to all government schemes, and it is **not** a
+live government API.
+
+- **Dataset:** [Indian Government Schemes 2025](https://huggingface.co/datasets/smartduketech/indian-government-schemes-2025) by SmartDuke Technologies (CC BY 4.0).
+- **Original source:** India's official [myScheme](https://www.myscheme.gov.in/) portal (Digital India Corporation / MeitY).
+- **Size / records:** ~16.8 MB CSV with ~4,693 scheme records.
+- **Collection date:** the dataset's `scraped_at` timestamps (July 2026); the tool reports the actual `data_as_of` date it derives from the file.
+
+The local CSV (and the API Setu / myScheme live API) was **not** integrated via
+live API calls — authenticated API Setu consumer access requires separate
+onboarding and credentials, so this challenge uses the public dataset route.
+Everything below is read from the local `Schemes.csv`; the agent never
+fabricates schemes or eligibility criteria.
+
+### Setup
+
+```bash
+cd backend
+uv run python scripts/fetch_schemes.py   # downloads data/Schemes.csv (~16.8 MB)
+```
+
+`backend/data/` is gitignored, so the ~16.8 MB file is downloaded during setup
+rather than committed to the repository.
+
+### How matching works
+
+`find_eligible_schemes()` in [`src/schemes.py`](src/schemes.py) loads the CSV
+once per process (cached) and matches the caller's profile against the
+dataset's **structured** eligibility fields only — age range, gender, caste,
+annual income limit, rural/urban residence, state applicability, disability
+flag, and BPL flag. Free-text `eligibility_text` is included only as a summary
+for the LLM to explain; it is never parsed into new rules. Financial Services
+schemes (category "Banking,Financial Services and Insurance") are ranked first,
+and results are capped at a small number of best matches.
+
+### Honest limits
+
+- Matches are **preliminary** — never a guarantee of official eligibility.
+- Every result carries `source`, `data_as_of`, and `disclaimer`, and directs the
+  caller to the official scheme URL to verify.
+- If the dataset is missing or unreadable, the tool returns a controlled error
+  and the agent says it cannot check scheme information rather than inventing an
+  answer.
+
 ## Deployment
 
 ### Railway
@@ -215,9 +317,17 @@ docker run --env-file .env.local murf-voice-agent
 ```
 backend/
 ├── src/
-│   └── agent.py          # Agent entrypoint — pipeline, prompt, config
+│   ├── agent.py          # Agent entrypoint — pipeline, prompt, config, tools
+│   ├── memory.py         # Day 4 MongoDB caller memory
+│   ├── schemes.py        # Day 5 government scheme eligibility matching
+│   └── tts_hindi.py      # Hindi pronunciation layer for Murf TTS
+├── scripts/
+│   └── fetch_schemes.py  # Day 5 dataset downloader (stdlib only)
+├── data/
+│   └── Schemes.csv       # Day 5 dataset (downloaded, gitignored)
 ├── tests/
-│   └── test_agent.py     # LLM-judged eval suite
+│   ├── test_agent.py     # LLM-judged eval suite
+│   └── test_schemes.py   # Day 5 scheme matching unit tests
 ├── .env.example           # Environment variable template
 ├── pyproject.toml         # Python dependencies (uv)
 ├── Dockerfile             # Production container

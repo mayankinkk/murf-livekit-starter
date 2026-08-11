@@ -19,7 +19,7 @@ type ImageData = {
 };
 
 // Image metadata
-export const alt = 'About Acme';
+export const alt = 'RupeeGPT Voice';
 export const size = {
   width: 1200,
   height: 628,

@@ -1,64 +1,242 @@
-import { Button } from '@/components/ui/button';
+'use client';
 
-function WelcomeImage() {
-  return (
-    <svg
-      width="64"
-      height="64"
-      viewBox="0 0 64 64"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className="text-fg0 mb-4 size-16"
-    >
-      <path
-        d="M15 24V40C15 40.7957 14.6839 41.5587 14.1213 42.1213C13.5587 42.6839 12.7956 43 12 43C11.2044 43 10.4413 42.6839 9.87868 42.1213C9.31607 41.5587 9 40.7957 9 40V24C9 23.2044 9.31607 22.4413 9.87868 21.8787C10.4413 21.3161 11.2044 21 12 21C12.7956 21 13.5587 21.3161 14.1213 21.8787C14.6839 22.4413 15 23.2044 15 24ZM22 5C21.2044 5 20.4413 5.31607 19.8787 5.87868C19.3161 6.44129 19 7.20435 19 8V56C19 56.7957 19.3161 57.5587 19.8787 58.1213C20.4413 58.6839 21.2044 59 22 59C22.7956 59 23.5587 58.6839 24.1213 58.1213C24.6839 57.5587 25 56.7957 25 56V8C25 7.20435 24.6839 6.44129 24.1213 5.87868C23.5587 5.31607 22.7956 5 22 5ZM32 13C31.2044 13 30.4413 13.3161 29.8787 13.8787C29.3161 14.4413 29 15.2044 29 16V48C29 48.7957 29.3161 49.5587 29.8787 50.1213C30.4413 50.6839 31.2044 51 32 51C32.7956 51 33.5587 50.6839 34.1213 50.1213C34.6839 49.5587 35 48.7957 35 48V16C35 15.2044 34.6839 14.4413 34.1213 13.8787C33.5587 13.3161 32.7956 13 32 13ZM42 21C41.2043 21 40.4413 21.3161 39.8787 21.8787C39.3161 22.4413 39 23.2044 39 24V40C39 40.7957 39.3161 41.5587 39.8787 42.1213C40.4413 42.6839 41.2043 43 42 43C42.7957 43 43.5587 42.6839 44.1213 42.1213C44.6839 41.5587 45 40.7957 45 40V24C45 23.2044 44.6839 22.4413 44.1213 21.8787C43.5587 21.3161 42.7957 21 42 21ZM52 17C51.2043 17 50.4413 17.3161 49.8787 17.8787C49.3161 18.4413 49 19.2044 49 20V44C49 44.7957 49.3161 45.5587 49.8787 46.1213C50.4413 46.6839 51.2043 47 52 47C52.7957 47 53.5587 46.6839 54.1213 46.1213C54.6839 45.5587 55 44.7957 55 44V20C55 19.2044 54.6839 18.4413 54.1213 17.8787C53.5587 17.3161 52.7957 17 52 17Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
+import React from 'react';
+import { Landmark, Mic, PiggyBank, ShieldCheck, TrendingUp } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { CardSpotlight } from '@/components/ui/card-spotlight';
+import { cn } from '@/lib/shadcn/utils';
 
 interface WelcomeViewProps {
+  /**
+   * Brand heading shown beneath the RupeeGPT logo.
+   */
+  title: string;
+  /**
+   * Short tagline shown beneath the title.
+   */
+  subtitle: string;
+  /**
+   * Short description shown beneath the subtitle.
+   */
+  description: string;
+  /**
+   * Text shown on the Start call button.
+   */
   startButtonText: string;
   onStartCall: () => void;
+  className?: string;
 }
 
 export const WelcomeView = ({
+  title,
+  subtitle,
+  description,
   startButtonText,
   onStartCall,
-  ref,
-}: React.ComponentProps<'div'> & WelcomeViewProps) => {
+  className,
+  ...props
+}: WelcomeViewProps & React.ComponentProps<'div'>) => {
   return (
-    <div ref={ref}>
-      <section className="bg-background flex flex-col items-center justify-center text-center">
-        <WelcomeImage />
+    <div
+      className={cn(
+        'relative flex h-full w-full flex-col items-center justify-between overflow-x-hidden overflow-y-auto bg-[#030303] px-6 py-6 md:py-8',
+        className
+      )}
+      {...props}
+    >
+      {/* Background Depth - Glow and Vignettes */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        {/* Radial Purple Glow behind Hero */}
+        <div className="absolute top-0 left-1/2 h-[350px] w-[700px] -translate-x-1/2 rounded-full bg-purple-600/[0.025] blur-[90px]" />
+        {/* Faint Indigo Glow */}
+        <div className="absolute top-[25%] left-[20%] h-[250px] w-[450px] rounded-full bg-indigo-500/[0.012] blur-[90px]" />
+      </div>
 
-        <p className="text-foreground max-w-prose pt-1 leading-6 font-medium">
-          Chat live with your voice AI agent
+      {/* Content Center Wrapper */}
+      <div className="relative z-10 my-auto flex w-full max-w-2xl flex-col items-center py-10 text-center">
+        {/* Hero Title & Subtitle */}
+        <h1 className="mt-6 font-sans text-3xl font-bold tracking-tight text-[#f5f5f5] md:text-4xl">
+          {title.toUpperCase()}
+        </h1>
+        <p className="mt-1.5 bg-gradient-to-r from-[#c4a7ff] via-[#f0c8ff] to-[#8b5cf6] bg-clip-text text-[10px] font-semibold tracking-[0.2em] text-transparent uppercase md:text-xs">
+          {subtitle}
         </p>
 
-        <Button
-          size="lg"
-          onClick={onStartCall}
-          className="mt-6 w-64 rounded-full font-mono text-xs font-bold tracking-wider uppercase"
-        >
-          {startButtonText}
-        </Button>
-      </section>
+        {/* Hero Supporting Text */}
+        <p className="mt-3 max-w-lg px-2 text-xs leading-relaxed text-[#92929a] md:text-sm">
+          {description}
+        </p>
 
-      <div className="fixed bottom-5 left-0 flex w-full items-center justify-center">
-        <p className="text-muted-foreground max-w-prose pt-1 text-xs leading-5 font-normal text-pretty md:text-sm">
-          Need help getting set up? Check out the{' '}
-          <a
-            target="_blank"
-            rel="noopener noreferrer"
-            href="https://docs.livekit.io/agents/start/voice-ai/"
-            className="underline"
+        {/* Capability indicator */}
+        <div className="mt-4 flex items-center justify-center gap-2.5 rounded-full border border-white/[0.04] bg-white/[0.01] px-4 py-1 text-[9px] font-semibold tracking-wider text-[#92929a] uppercase shadow-[0_2px_8px_rgba(0,0,0,0.15)] backdrop-blur-sm select-none md:text-[10px]">
+          <span>English</span>
+          <span className="font-bold text-[#8b5cf6]/60">•</span>
+          <span>Hindi</span>
+          <span className="font-bold text-[#8b5cf6]/60">•</span>
+          <span>Hinglish</span>
+        </div>
+
+        {/* Subtle premium divider */}
+        <div className="relative my-6 flex w-full max-w-xs items-center justify-center">
+          <div className="absolute inset-0 flex items-center">
+            <div className="h-[1px] w-full bg-gradient-to-r from-transparent via-white/5 to-transparent" />
+          </div>
+          <div className="relative size-1 rounded-full bg-[#8b5cf6] shadow-[0_0_6px_#8b5cf6]" />
+        </div>
+
+        {/* Capability Header */}
+        <div className="mb-4 flex flex-col items-center">
+          <span className="text-[9px] font-semibold tracking-[0.25em] text-[#8b5cf6] uppercase">
+            Financial Intelligence
+          </span>
+          <h2 className="mt-1 text-lg font-medium tracking-wide text-[#f5f5f5]">
+            What can RupeeGPT help with?
+          </h2>
+        </div>
+
+        {/* Cards Grid */}
+        <div className="grid w-full gap-3 text-left sm:grid-cols-2">
+          {/* Card 1 */}
+          <CardSpotlight className="relative flex h-28 flex-col justify-center overflow-hidden rounded-2xl border border-white/[0.04] bg-[#0b0b0b]/60 p-5 transition-all duration-300 hover:border-purple-500/20">
+            {/* Micro details: Line graph motif */}
+            <svg
+              className="pointer-events-none absolute right-2 bottom-2 size-12 text-[#8b5cf6]/[0.02]"
+              viewBox="0 0 40 40"
+              fill="none"
+            >
+              <path
+                d="M5 32 L12 22 L20 27 L28 12 L35 17"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+
+            <div>
+              <div className="flex items-center gap-2 text-[#c4a7ff] transition-colors group-hover:text-[#f0c8ff]">
+                <Landmark className="size-4 shrink-0" />
+                <h3 className="font-sans text-[10px] font-semibold tracking-wider uppercase">
+                  Banking & UPI
+                </h3>
+              </div>
+              <p className="mt-2 pr-4 text-[11px] leading-relaxed text-[#92929a]">
+                Get guidance on bank accounts, UPI, cards, ATMs, and everyday digital payments.
+              </p>
+            </div>
+          </CardSpotlight>
+
+          {/* Card 2 */}
+          <CardSpotlight className="relative flex h-28 flex-col justify-center overflow-hidden rounded-2xl border border-white/[0.04] bg-[#0b0b0b]/60 p-5 transition-all duration-300 hover:border-purple-500/20">
+            {/* Micro details: Dot grid */}
+            <div className="pointer-events-none absolute top-2 right-2 grid grid-cols-4 gap-0.5 opacity-[0.04]">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="size-0.5 rounded-full bg-[#c4a7ff]" />
+              ))}
+            </div>
+
+            <div>
+              <div className="flex items-center gap-2 text-[#c4a7ff] transition-colors group-hover:text-[#f0c8ff]">
+                <PiggyBank className="size-4 shrink-0" />
+                <h3 className="font-sans text-[10px] font-semibold tracking-wider uppercase">
+                  Savings & Budgeting
+                </h3>
+              </div>
+              <p className="mt-2 pr-4 text-[11px] leading-relaxed text-[#92929a]">
+                Plan spending, understand savings options, and build better budgeting habits.
+              </p>
+            </div>
+          </CardSpotlight>
+
+          {/* Card 3 */}
+          <CardSpotlight className="relative flex h-28 flex-col justify-center overflow-hidden rounded-2xl border border-white/[0.04] bg-[#0b0b0b]/60 p-5 transition-all duration-300 hover:border-purple-500/20">
+            {/* Micro details: Faint ₹ symbol */}
+            <span className="pointer-events-none absolute right-3 bottom-1 font-serif text-3xl font-semibold text-[#f0c8ff]/[0.02] select-none">
+              ₹
+            </span>
+
+            <div>
+              <div className="flex items-center gap-2 text-[#c4a7ff] transition-colors group-hover:text-[#f0c8ff]">
+                <TrendingUp className="size-4 shrink-0" />
+                <h3 className="font-sans text-[10px] font-semibold tracking-wider uppercase">
+                  Investments & Loans
+                </h3>
+              </div>
+              <p className="mt-2 pr-4 text-[11px] leading-relaxed text-[#92929a]">
+                Learn the basics of investments, loans, credit, interest, and common financial
+                products.
+              </p>
+            </div>
+          </CardSpotlight>
+
+          {/* Card 4 */}
+          <CardSpotlight className="relative flex h-28 flex-col justify-center overflow-hidden rounded-2xl border border-white/[0.04] bg-[#0b0b0b]/60 p-5 transition-all duration-300 hover:border-purple-500/20">
+            {/* Micro details: Faint compass/shield signal */}
+            <svg
+              className="pointer-events-none absolute right-2 bottom-2 size-10 text-[#8b5cf6]/[0.02]"
+              viewBox="0 0 40 40"
+              fill="none"
+            >
+              <circle cx="20" cy="20" r="11" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M20 14 V26 M14 20 H26" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+
+            <div>
+              <div className="flex items-center gap-2 text-[#c4a7ff] transition-colors group-hover:text-[#f0c8ff]">
+                <ShieldCheck className="size-4 shrink-0" />
+                <h3 className="font-sans text-[10px] font-semibold tracking-wider uppercase">
+                  Financial Safety
+                </h3>
+              </div>
+              <p className="mt-2 pr-4 text-[11px] leading-relaxed text-[#92929a]">
+                Learn how to recognize scams and protect yourself from financial fraud.
+              </p>
+            </div>
+          </CardSpotlight>
+        </div>
+
+        {/* Language selector indicator */}
+        <div className="mt-6 flex flex-col items-center gap-2">
+          <span className="text-[9px] font-semibold tracking-[0.2em] text-[#92929a] uppercase select-none">
+            Supported Languages
+          </span>
+          <div className="flex items-center gap-4 rounded-full border border-white/[0.04] bg-white/[0.005] px-5 py-1.5 shadow-[0_2px_8px_rgba(0,0,0,0.25)] select-none">
+            <span className="text-[11px] font-medium tracking-wide text-[#f5f5f5]">English</span>
+            <span className="h-1 w-1 rounded-full bg-[#8b5cf6]" />
+            <span className="text-[11px] font-medium tracking-wide text-[#f5f5f5]">Hindi</span>
+            <span className="h-1 w-1 rounded-full bg-[#8b5cf6]" />
+            <span className="text-[11px] font-medium tracking-wide text-[#f5f5f5]">Hinglish</span>
+          </div>
+        </div>
+
+        {/* CTA (Start RupeeGPT Call Button) */}
+        <div className="mt-6 flex flex-col items-center gap-2">
+          <Button
+            size="lg"
+            onClick={onStartCall}
+            className="group relative cursor-pointer overflow-hidden rounded-full border border-purple-400/20 bg-gradient-to-b from-[#8b5cf6] to-[#6d3fd9] px-8 py-5.5 font-sans text-xs font-semibold tracking-wider text-white shadow-[0_4px_12px_rgba(109,63,217,0.15)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(139,92,246,0.3)]"
           >
-            Voice AI quickstart
-          </a>
-          .
-        </p>
+            {/* Hover highlight overlay */}
+            <span className="pointer-events-none absolute inset-0 bg-white/[0.04] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+            <span className="relative z-10 flex items-center gap-2">
+              <Mic className="size-3.5 text-[#f0c8ff] transition-transform duration-300 group-hover:scale-110" />
+              {startButtonText.toUpperCase()}
+            </span>
+          </Button>
+          <span className="mt-0.5 text-[10px] tracking-wide text-[#92929a] select-none">
+            Your voice. Your questions. Your financial assistant.
+          </span>
+        </div>
+
+        {/* Product Statement / Subtle Footer */}
+        <footer className="mt-8 flex w-full flex-col items-center gap-1 text-center select-none">
+          <p className="text-[10px] font-medium tracking-wide text-[#92929a]">
+            RupeeGPT &bull; AI-powered financial guidance
+          </p>
+          <p className="max-w-sm px-4 text-[9px] text-[#92929a]/40">
+            Always verify important financial decisions with official sources.
+          </p>
+        </footer>
       </div>
     </div>
   );

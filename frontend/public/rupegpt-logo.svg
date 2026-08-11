@@ -1,0 +1,21 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="rupegpt-logo-bg" x1="16" y1="0" x2="112" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8B5CF6" />
+      <stop offset="0.5" stop-color="#7C3AED" />
+      <stop offset="1" stop-color="#4F46E5" />
+    </linearGradient>
+    <linearGradient id="rupegpt-logo-bars" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#EDE9FE" />
+      <stop offset="1" stop-color="#FFFFFF" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#rupegpt-logo-bg)" />
+  <rect x="4.5" y="4.5" width="119" height="119" rx="30" stroke="#FFFFFF" stroke-opacity="0.15" stroke-width="1" fill="none" />
+  <g fill="url(#rupegpt-logo-bars)">
+    <rect x="28" y="70" width="7" height="22" rx="3.5" />
+    <rect x="39" y="58" width="7" height="34" rx="3.5" />
+    <rect x="50" y="46" width="7" height="46" rx="3.5" />
+  </g>
+  <text x="92" y="82" text-anchor="middle" dominant-baseline="central" font-family="'Public Sans', ui-sans-serif, system-ui, sans-serif" font-size="56" font-weight="700" fill="#FFFFFF">₹</text>
+</svg>

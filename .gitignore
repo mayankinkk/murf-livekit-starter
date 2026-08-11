@@ -2,3 +2,6 @@
 .env.*
 !.env.example
 .DS_Store
+
+# Day 5: local schemes dataset (downloaded, not committed)
+backend/data/

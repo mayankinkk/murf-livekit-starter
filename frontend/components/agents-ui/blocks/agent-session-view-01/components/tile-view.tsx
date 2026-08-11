@@ -69,6 +69,8 @@ export function useLocalTrackRef(source: Track.Source) {
 
 interface TileLayoutProps {
   chatOpen: boolean;
+  /** Live agent state description rendered beneath the visualizer. */
+  statusDescription?: string;
   audioVisualizerType?: 'bar' | 'wave' | 'grid' | 'radial' | 'aura';
   audioVisualizerColor?: `#${string}`;
   audioVisualizerColorShift?: number;
@@ -82,6 +84,7 @@ interface TileLayoutProps {
 
 export function TileLayout({
   chatOpen,
+  statusDescription,
   audioVisualizerType,
   audioVisualizerColor,
   audioVisualizerColorShift,
@@ -108,6 +111,18 @@ export function TileLayout({
   return (
     <div className="absolute inset-x-0 top-8 bottom-32 z-50 md:top-12 md:bottom-40">
       <div className="relative mx-auto h-full max-w-2xl px-4 md:px-0">
+        {statusDescription && !chatOpen && (
+          <motion.p
+            key="status-description"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.5, duration: 0.4 }}
+            role="status"
+            className="text-muted-foreground pointer-events-none absolute inset-x-0 bottom-4 text-center font-mono text-[11px] font-bold tracking-[0.2em] uppercase md:bottom-8 md:text-sm"
+          >
+            {statusDescription}
+          </motion.p>
+        )}
         <div className={cn(tileViewClassNames.grid)}>
           {/* Agent */}
           <div

@@ -44,13 +44,26 @@ export async function POST(req: Request) {
       );
     }
 
+    // Day 4 — persistent caller memory: the browser sends its UUID inside the
+    // participant attributes (`participant_attributes.user_id`), which we attach
+    // to the participant token so the backend agent can identify this caller.
+    const userId =
+      typeof body?.participant_attributes?.user_id === 'string' &&
+      body.participant_attributes.user_id.length > 0
+        ? body.participant_attributes.user_id
+        : undefined;
+
     // Generate participant token
     const participantName = 'user';
     const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
     const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
 
     const participantToken = await createParticipantToken(
-      { identity: participantIdentity, name: participantName },
+      {
+        identity: participantIdentity,
+        name: participantName,
+        ...(userId ? { attributes: { user_id: userId } } : {}),
+      },
       roomName,
       roomConfig
     );
