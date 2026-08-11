@@ -83,9 +83,14 @@ SCHEME DATA DISCLAIMER (say it once, then keep it natural)
   not automatically repeat the full disclaimer; only mention the metadata again
   if it is genuinely needed for clarity.
 
-SAFETY & ESCALATION
+SAFETY, ESCALATION & HUMAN HELP (CRITICAL FOR DAY 7)
 - Never ask for or store OTPs/UPI PINs/ATM PINs/CVVs/passwords/Aadhaar or full account numbers. Never transact or authorize payments, never guarantee returns/approvals/eligibility, never impersonate banks/officials, never fabricate facts.
-- For account-specific issues, suspected fraud, or regulated financial/tax/legal advice, explain the limit and refer to the bank, official customer support, RBI, or a qualified advisor.
+- Identify the following two critical situations requiring human escalation:
+    1) Suspected Fraud / Unauthorized Transactions: If the caller reports a scam, unauthorized charges, or a hacked bank/UPI account.
+    2) Official Decision Override: If the caller requests a custom loan/subsidy limit raise or special interest rate approval that you cannot authorize.
+- When either situation is detected, you MUST stop assisting, tell the caller a human specialist needs to take over, state what information you will share (name, contact number, preferred language, issue summary), and ask for their explicit permission.
+- If they say YES, call the create_escalation() tool. Once it succeeds and returns a reference ID (e.g. ESC-XXXXXX), give the caller the reference ID, explain that a human will contact them within 24 hours, and advise on next steps (e.g., call their bank to block cards immediately if fraud).
+- If they say NO, explain that you cannot escalate or share details without their consent, and ask how they would like to proceed.
 - Keep replies brief and conversational (1-3 short sentences). No markdown, emojis, or formatting."""
 
 
@@ -755,6 +760,140 @@ class Assistant(Agent):
             bpl=bpl,
         )
         return json.dumps(result, ensure_ascii=False)
+
+    @function_tool(
+        raw_schema={
+            "name": "create_escalation",
+            "description": (
+                "Create a human assistance escalation request. Call this ONLY after "
+                "the caller has explicitly consented in the current conversation "
+                "to having their details sent to a human specialist. Details should "
+                "include caller name, contact number, the reason for escalation "
+                "(either 'Possible Fraud / Unauthorized Transaction' or 'Official Loan Decision Override'), "
+                "a brief summary of the issue (without sensitive info), urgency ('Urgent' or 'High'), "
+                "and preferred language."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "contact_number", "reason", "summary", "urgency", "preferred_language"],
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The caller's name.",
+                    },
+                    "contact_number": {
+                        "type": "string",
+                        "description": "The caller's phone number or contact information.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "enum": ["Possible Fraud / Unauthorized Transaction", "Official Loan Decision Override"],
+                        "description": "The category of the escalation.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "A short summary of what happened. Do NOT include passwords, OTPs, PINs, or account numbers.",
+                    },
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["Urgent", "High", "Medium"],
+                        "description": "The urgency level of the request.",
+                    },
+                    "preferred_language": {
+                        "type": "string",
+                        "description": "The caller's preferred language (e.g. 'English', 'Hindi', 'Hinglish').",
+                    },
+                },
+            },
+        }
+    )
+    async def create_escalation(
+        self,
+        context: RunContext,
+        raw_arguments: dict[str, object] | None = None,
+        name: str | None = None,
+        contact_number: str | None = None,
+        reason: str | None = None,
+        summary: str | None = None,
+        urgency: str | None = None,
+        preferred_language: str | None = None,
+    ) -> str:
+        """Create a human assistance escalation request.
+
+        Saves the details to the shared escalations dashboard and returns a reference ID.
+        """
+        import random
+        from datetime import datetime, timezone
+        import urllib.request
+
+        name = _pick_arg(raw_arguments, "name", name)
+        contact_number = _pick_arg(raw_arguments, "contact_number", contact_number)
+        reason = _pick_arg(raw_arguments, "reason", reason)
+        summary = _pick_arg(raw_arguments, "summary", summary)
+        urgency = _pick_arg(raw_arguments, "urgency", urgency)
+        preferred_language = _pick_arg(raw_arguments, "preferred_language", preferred_language)
+
+        ref_id = f"ESC-{random.randint(100000, 999999)}"
+
+        escalation = {
+            "id": ref_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "name": name,
+            "contact_number": contact_number,
+            "reason": reason,
+            "summary": summary,
+            "urgency": urgency,
+            "preferred_language": preferred_language,
+            "status": "Open"
+        }
+
+        # Write to JSON file (try multiple paths to ensure success)
+        success = False
+        paths = [
+            "/home/mayank/Documents/Murf AI/murf-livekit-starter/frontend/public/escalations.json",
+            "../frontend/public/escalations.json",
+            "frontend/public/escalations.json",
+            "./frontend/public/escalations.json"
+        ]
+
+        for path in paths:
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                escalations = []
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        try:
+                            escalations = json.load(f)
+                            if not isinstance(escalations, list):
+                                escalations = []
+                        except Exception:
+                            escalations = []
+                
+                escalations.append(escalation)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(escalations, f, indent=2, ensure_ascii=False)
+                success = True
+                logger.info(f"[ESCALATION] Saved to file {path}")
+            except Exception as e:
+                logger.warning(f"[ESCALATION] Failed to save to file {path}: {e}")
+
+        # Also trigger Next.js API POST endpoint if running
+        try:
+            url = "http://localhost:3000/api/escalations"
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(escalation).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=1.0) as response:
+                if response.status == 200:
+                    logger.info("[ESCALATION] Webhook POST to Next.js API succeeded")
+        except Exception as e:
+            logger.info(f"[ESCALATION] Webhook POST failed (Next.js server offline or port mismatch): {e}")
+
+        return json.dumps({"status": "success", "reference_id": ref_id})
 
 
 server = AgentServer()

@@ -5,3 +5,10 @@
 
 # Day 5: local schemes dataset (downloaded, not committed)
 backend/data/
+
+# Local binaries and logs
+livekit-server
+backend/agent.log
+
+# Dynamic escalations data
+frontend/public/escalations.json
