@@ -1,9 +1,15 @@
 """
-BharatPay Pooja Voice Agent — Day 5
-Adds real-data function tools so Pooja can look up live financial data.
+BharatPay Pooja Voice Agent — Day 6
+Adds proactive outbound call support triggered by scheme deadline alerts.
 
-New capabilities (Day 5)
+New capabilities (Day 6)
 ------------------------
+* Outbound call flow — agent is dispatched to a LiveKit room BEFORE the phone rings
+* Proper outbound opener — identifies herself, states reason, offers opt-out in first 2 sentences
+* Reads job metadata (call_type, scheme_name, caller_name) injected by outbound_caller.py
+
+Carried over from Day 5
+-----------------------
 * get_usd_inr_rate()         — Fetches LIVE USD/INR from open.er-api.com; graceful fallback
 * get_lending_rates()        — Returns RBI repo rate + BharatPay loan APR from local dataset
 * check_scheme_eligibility() — Checks caller against 5 GoI financial scheme eligibility rules
@@ -69,6 +75,24 @@ You have two memory tools:
    - If they say NO, do NOT call save_caller_info. Respect their choice without questioning.
    - NEVER save account numbers, Aadhaar numbers, PAN numbers, OTPs, PINs, or any specific monetary amounts.
    - Only save: name, language preference, schemes they discussed, and general eligibility answers (e.g., "has_existing_loan: yes").
+
+# OUTBOUND CALL PROTOCOL  ← NEW for Day 6
+If the job metadata indicates call_type = "outbound", this is a PROACTIVE call that YOU placed — the user did NOT call in. Follow these strict rules:
+
+OPENING (already handled by script, but reinforce in the conversation):
+- The user may be surprised or uncertain. Stay warm and reassuring.
+- At the start: You have already said who you are and why you're calling. Do NOT repeat the full intro — pick up naturally from where the scripted greeting ended.
+- If the user asks "Aapne mujhe kyu call kiya?" — calmly restate: you're from BharatPay, the enrollment deadline for their scheme is approaching.
+
+OPT-OUT: If the user says any of: "band karo", "mat karo", "nahi chahiye", "not interested", "busy hoon", "baad mein", "hang up", or any clear signal they want to stop — IMMEDIATELY say: "Bilkul samajh gaya, main call khatam karti hoon. Agar kabhi zarurat ho, BharatPay app ya 1800-123-4567 pe call karein. Dhanyavaad!" and end the interaction. Do NOT push further.
+
+GOAL of outbound call: Tell the user:
+1. Which scheme deadline is approaching (use the scheme_name from metadata)
+2. What they need to do to enroll (visit a bank branch or BharatPay app)
+3. That they can check eligibility right now with you on this call
+Keep it SHORT. The call should ideally be under 3 minutes. Every message under 15 words where possible.
+
+NEVER hard-sell. NEVER pressure. This is an alert call — the user decides.
 
 # REAL-DATA TOOLS  ← NEW for Day 5
 You now have three tools that fetch or compute real financial data:
@@ -176,6 +200,10 @@ Say immediately: "Ye bahut important hai. Please call our fraud helpline at 1800
 # Standard first-time greeting (returning caller greeting is built dynamically)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Inbound greetings (Day 1–5)
+# ---------------------------------------------------------------------------
+
 GREETING_NEW = (
     "Namaste! Main hoon Pooja, BharatPay support se. "
     "Main aapki help kar sakti hoon — UPI payments, wallet, account, loan, "
@@ -204,6 +232,31 @@ def _build_returning_greeting(record: dict) -> str:
         f"Aapko phir sun ke achha laga. "
         f"{context_hint}"
         f"Aaj main aapki kya help kar sakti hoon?"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Day 6 — Outbound greetings
+# Rule: In first 2 sentences → who's calling, why, how to opt out
+# ---------------------------------------------------------------------------
+
+def _build_outbound_greeting(
+    scheme_name: str,
+    caller_name: str | None = None,
+) -> str:
+    """
+    Outbound opener following Day 6 rules:
+      Sentence 1: Who is calling + why
+      Sentence 2: How to make it stop (opt-out)
+    Then: the actual helpful message.
+    """
+    name_part = f"{caller_name} ji, " if caller_name else ""
+    return (
+        f"Namaste {name_part}main Pooja bol rahi hoon BharatPay ki taraf se — "
+        f"{scheme_name} ki enrollment deadline is hafte khatam ho rahi hai, "
+        f"aur hum chahte hain ki aap is mauke ko na chukein. "
+        f"Agar aap abhi baat nahi karna chahte, bas kehna 'band karo' aur main turant call khatam kar dungi. "
+        f"Kya main aapko is scheme ke baare mein thodi si jaankari de sakti hoon?"
     )
 
 
@@ -393,14 +446,41 @@ async def my_agent(ctx: JobContext):
     ctx.log_context_fields = {"room": ctx.room.name}
 
     # ------------------------------------------------------------------
-    # Memory look-up BEFORE session starts
-    # Use the room name as a stable caller ID.
-    # In production you'd use a verified phone number / user JWT claim.
+    # Day 6 — Detect outbound call from job metadata
+    # outbound_caller.py injects JSON metadata into the agent dispatch.
     # ------------------------------------------------------------------
-    user_id = ctx.room.name
+    import json as _json
+    outbound_meta: dict = {}
+    raw_meta = getattr(ctx.job, "metadata", None) or ""
+    if raw_meta:
+        try:
+            outbound_meta = _json.loads(raw_meta)
+        except Exception:
+            logger.warning("Could not parse job metadata: %s", raw_meta)
+
+    is_outbound = outbound_meta.get("call_type") == "outbound"
+    outbound_scheme = outbound_meta.get("scheme_name", "PM Mudra Yojana")
+    outbound_caller_name = outbound_meta.get("caller_name") or None
+    outbound_phone = outbound_meta.get("caller_phone", "")
+
+    # ------------------------------------------------------------------
+    # Memory look-up BEFORE session starts
+    # For outbound calls use the phone number as the caller ID;
+    # for inbound use the room name (stable per session).
+    # ------------------------------------------------------------------
+    user_id = outbound_phone if (is_outbound and outbound_phone) else ctx.room.name
     caller_record = lookup_caller(user_id)
 
-    if caller_record and caller_record.get("consent_given"):
+    if is_outbound:
+        greeting = _build_outbound_greeting(
+            scheme_name=outbound_scheme,
+            caller_name=outbound_caller_name,
+        )
+        logger.info(
+            "OUTBOUND call → phone=%s  scheme=%s  name=%s",
+            outbound_phone, outbound_scheme, outbound_caller_name,
+        )
+    elif caller_record and caller_record.get("consent_given"):
         greeting = _build_returning_greeting(caller_record)
         logger.info("Returning caller detected: %s", caller_record.get("name"))
     else:
@@ -439,7 +519,7 @@ async def my_agent(ctx: JobContext):
 
     await ctx.connect()
 
-    # Speak the appropriate greeting
+    # Speak the appropriate greeting (outbound / returning / new)
     await session.say(greeting)
 
 
