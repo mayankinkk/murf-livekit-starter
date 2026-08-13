@@ -14,8 +14,10 @@ import {
   Search,
   SlidersHorizontal,
   Check,
-  Building
+  Building,
+  ArrowUpRight
 } from 'lucide-react';
+import Link from 'next/link';
 
 interface Escalation {
   id: string;
@@ -187,7 +189,19 @@ export default function EscalationDashboard() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3 self-stretch md:self-auto justify-between md:justify-start">
+          <div className="flex flex-wrap items-center gap-3 self-stretch md:self-auto justify-between md:justify-start">
+            <Link
+              href="/"
+              className="px-4 py-2 rounded-xl bg-violet-950/20 hover:bg-violet-900/30 border border-violet-900/40 hover:border-violet-700/40 text-slate-300 text-xs font-semibold transition-all flex items-center gap-1"
+            >
+              Voice Agent <ArrowUpRight className="w-3.5 h-3.5" />
+            </Link>
+            <Link
+              href="/dashboard"
+              className="px-4 py-2 rounded-xl bg-violet-950/20 hover:bg-violet-900/30 border border-violet-900/40 hover:border-violet-700/40 text-slate-300 text-xs font-semibold transition-all flex items-center gap-1"
+            >
+              Call Analytics <ArrowUpRight className="w-3.5 h-3.5" />
+            </Link>
             <div className="flex items-center gap-2 text-xs text-slate-400 bg-[#120b24] px-3.5 py-2 rounded-xl border border-violet-950/60">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>

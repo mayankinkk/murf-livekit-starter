@@ -399,13 +399,11 @@ async def outbound_agent(ctx: JobContext):
 
 
 def inference_llm():
-    """Gemini served by LiveKit Inference - matches src/agent.py (no API key)."""
-    from livekit.agents import inference
+    """Gemini served by Google plugin - matches src/agent.py."""
+    from livekit.plugins import google
 
-    max_output_tokens = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024"))
-    return inference.LLM(
-        model="google/gemini-3.5-flash-lite",
-        extra_kwargs={"max_completion_tokens": max_output_tokens},
+    return google.LLM(
+        model="gemini-3.5-flash-lite",
     )
 
 

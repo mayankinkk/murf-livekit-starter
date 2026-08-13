@@ -21,7 +21,7 @@ from livekit.agents import (
     room_io,
     tokenize,
 )
-from livekit.plugins import deepgram, murf, noise_cancellation, silero
+from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 import memory
@@ -31,6 +31,9 @@ import tts_hindi
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
+import os
+print("!!! DEBUG MODULE LEVEL CURRENT CWD:", os.getcwd())
+print("!!! DEBUG MODULE LEVEL AGENT_NAME:", os.getenv("AGENT_NAME"))
 
 SYSTEM_PROMPT = """You are RupeeGPT, a personal AI assistant for Indian users.
 
@@ -759,6 +762,12 @@ class Assistant(Agent):
             disability=disability,
             bpl=bpl,
         )
+        # Mark call as successful
+        data = _session_userdata(context)
+        if isinstance(data, dict):
+            data["success"] = True
+            data["success_reason"] = "Checked government schemes eligibility"
+
         return json.dumps(result, ensure_ascii=False)
 
     @function_tool(
@@ -893,6 +902,12 @@ class Assistant(Agent):
         except Exception as e:
             logger.info(f"[ESCALATION] Webhook POST failed (Next.js server offline or port mismatch): {e}")
 
+        # Mark call as successful
+        data = _session_userdata(context)
+        if isinstance(data, dict):
+            data["success"] = True
+            data["success_reason"] = f"Created human escalation: {ref_id}"
+
         return json.dumps({"status": "success", "reference_id": ref_id})
 
 
@@ -965,7 +980,7 @@ def prewarm(proc: JobProcess):
 server.setup_fnc = prewarm
 
 
-@server.rtc_session(agent_name="moneygpt-voice")
+@server.rtc_session(agent_name=os.getenv("AGENT_NAME", "pooja-voice"))
 async def my_agent(ctx: JobContext):
     # Logging setup
     # Add any other context you want in all log entries here
@@ -975,7 +990,14 @@ async def my_agent(ctx: JobContext):
 
     # Per-session caller identity (persistent browser ID, see Day 4). The tools
     # in `Assistant` read it from `userdata` — it is filled in after connect.
-    userdata = {"user_id": ""}
+    from datetime import datetime, timezone
+    userdata = {
+        "user_id": "",
+        "success": False,
+        "success_reason": "",
+        "start_time": datetime.now(timezone.utc).isoformat(),
+        "call_type": "web"
+    }
 
     # Cap LLM output. Voice replies are short, and LiveKit Inference has no
     # Groq-style per-minute token cap to guard against, so a modest cap simply
@@ -989,11 +1011,9 @@ async def my_agent(ctx: JobContext):
         # See all available models at https://docs.livekit.io/agents/models/stt/
         stt=deepgram.STT(model="nova-3", language="multi"),
         # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # LiveKit Inference serves Gemini on LiveKit's infrastructure (no API key needed).
         # See all available models at https://docs.livekit.io/agents/models/llm/
-        llm=inference.LLM(
-            model="google/gemini-3.5-flash-lite",
-            extra_kwargs={"max_completion_tokens": max_output_tokens},
+        llm=google.LLM(
+            model="gemini-3.5-flash-lite",
         ),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
@@ -1051,6 +1071,89 @@ async def my_agent(ctx: JobContext):
 
     def _on_close(ev) -> None:
         logger.info("[CALL] session closed reason=%s error=%r", ev.reason, ev.error)
+        try:
+            from datetime import datetime, timezone
+            import urllib.request
+            import urllib.error
+
+            ended_at = datetime.now(timezone.utc).isoformat()
+            start_time_str = userdata.get("start_time")
+            duration = 0.0
+            if start_time_str:
+                try:
+                    start_dt = datetime.fromisoformat(start_time_str)
+                    end_dt = datetime.fromisoformat(ended_at)
+                    duration = (end_dt - start_dt).total_seconds()
+                except Exception:
+                    pass
+
+            call_type = "web"
+            try:
+                for p in ctx.room.remote_participants.values():
+                    if p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+                        call_type = "sip"
+                        break
+            except Exception:
+                pass
+
+            call_record = {
+                "id": ctx.room.name or str(uuid.uuid4()),
+                "created_at": start_time_str or ended_at,
+                "ended_at": ended_at,
+                "duration_seconds": round(duration, 2),
+                "success": userdata.get("success", False),
+                "success_reason": userdata.get("success_reason", ""),
+                "call_type": call_type,
+                "user_id": userdata.get("user_id", "")
+            }
+
+            # Save to JSON file
+            paths = [
+                "/home/mayank/Documents/Murf AI/murf-livekit-starter/frontend/public/calls.json",
+                "../frontend/public/calls.json",
+                "frontend/public/calls.json",
+                "./frontend/public/calls.json"
+            ]
+            for path in paths:
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    calls = []
+                    if os.path.exists(path):
+                        with open(path, "r", encoding="utf-8") as f:
+                            try:
+                                calls = json.load(f)
+                                if not isinstance(calls, list):
+                                    calls = []
+                            except Exception:
+                                calls = []
+                    
+                    # Avoid duplicate records for the same room
+                    calls = [c for c in calls if c.get("id") != call_record["id"]]
+                    calls.append(call_record)
+                    
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(calls, f, indent=2, ensure_ascii=False)
+                    logger.info(f"[CALL LOG] Saved to file {path}")
+                except Exception as e:
+                    logger.warning(f"[CALL LOG] Failed to save to file {path}: {e}")
+
+            # Send POST to Next.js API
+            try:
+                url = "http://localhost:3000/api/calls"
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(call_record).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=0.5) as response:
+                    if response.status == 200:
+                        logger.info("[CALL LOG] Webhook POST to Next.js API succeeded")
+            except Exception as e:
+                logger.info(f"[CALL LOG] Webhook POST failed: {e}")
+
+        except Exception as e:
+            logger.error(f"[CALL LOG] Error saving call log: {e}")
 
     session.on("metrics_collected", _on_metrics)
     session.on("user_input_transcribed", _on_user_input)
@@ -1093,4 +1196,6 @@ async def my_agent(ctx: JobContext):
 
 
 if __name__ == "__main__":
+    import os
+    print("RESOLVED AGENT_NAME AT STARTUP:", os.getenv("AGENT_NAME"))
     cli.run_app(server)

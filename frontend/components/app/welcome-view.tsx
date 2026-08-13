@@ -5,6 +5,7 @@ import { Landmark, Mic, PiggyBank, ShieldCheck, TrendingUp } from 'lucide-react'
 import { Button } from '@/components/ui/button';
 import { CardSpotlight } from '@/components/ui/card-spotlight';
 import { cn } from '@/lib/shadcn/utils';
+import Link from 'next/link';
 
 interface WelcomeViewProps {
   /**
@@ -229,8 +230,17 @@ export const WelcomeView = ({
         </div>
 
         {/* Product Statement / Subtle Footer */}
-        <footer className="mt-8 flex w-full flex-col items-center gap-1 text-center select-none">
-          <p className="text-[10px] font-medium tracking-wide text-[#92929a]">
+        <footer className="mt-8 flex w-full flex-col items-center gap-2 text-center select-none">
+          <div className="flex gap-4 justify-center text-[10px] font-semibold tracking-wider uppercase text-purple-400/80">
+            <Link href="/demo" className="hover:text-purple-300 transition-colors">
+              Escalation Desk
+            </Link>
+            <span className="text-white/10">|</span>
+            <Link href="/dashboard" className="hover:text-purple-300 transition-colors">
+              Call Analytics
+            </Link>
+          </div>
+          <p className="text-[10px] font-medium tracking-wide text-[#92929a] mt-1">
             RupeeGPT &bull; AI-powered financial guidance
           </p>
           <p className="max-w-sm px-4 text-[9px] text-[#92929a]/40">

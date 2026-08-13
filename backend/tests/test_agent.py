@@ -2,14 +2,15 @@ import json
 import re
 
 import pytest
-from livekit.agents import AgentSession, inference, llm
+from livekit.agents import AgentSession, llm
+from livekit.plugins import google
 
 import memory
 from agent import Assistant
 
 
 def _llm() -> llm.LLM:
-    return inference.LLM(model="google/gemini-3.5-flash-lite")
+    return google.LLM(model="gemini-3.5-flash-lite")
 
 
 @pytest.mark.asyncio

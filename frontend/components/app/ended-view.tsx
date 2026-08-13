@@ -3,6 +3,7 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/shadcn/utils';
+import Link from 'next/link';
 
 interface EndedViewProps {
   onStartAgain: () => void;
@@ -29,6 +30,16 @@ export const EndedView = ({ onStartAgain, className }: EndedViewProps) => {
         >
           START AGAIN
         </Button>
+
+        <div className="flex gap-4 justify-center text-[10px] font-semibold tracking-wider uppercase text-purple-400/80 mt-6 w-full border-t border-white/[0.06] pt-4">
+          <Link href="/demo" className="hover:text-purple-300 transition-colors">
+            Escalation Desk
+          </Link>
+          <span className="text-white/10">|</span>
+          <Link href="/dashboard" className="hover:text-purple-300 transition-colors">
+            Call Analytics
+          </Link>
+        </div>
       </div>
     </div>
   );
