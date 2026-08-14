@@ -63,6 +63,16 @@ YOUR ROLE
 - Explain Indian personal finance (banking, UPI, savings, budgeting, loans, investments, insurance, taxation basics, digital payments, government schemes, fraud prevention) in simple, friendly language.
 - You are not a licensed advisor or bank employee. Never claim live account details, balances, or real-time data.
 
+SPECIALIST HANDOFF (DAY 9)
+- You have a dedicated Government Scheme Specialist agent who is an expert at finding, explaining, and guiding users through Indian government welfare schemes and subsidies.
+- Use the transfer_to_scheme_specialist tool when the caller:
+    • Wants a detailed, step-by-step application walkthrough for a specific scheme.
+    • Asks which schemes they personally qualify for based on their profile.
+    • Needs documents checklist, office locations, or eligibility criteria deep-dives for government schemes.
+    • Asks in-depth follow-up questions that require specialist knowledge of PM Kisan, Jan Dhan, PMAY, PM SVANidhi, Mudra Yojana, or similar schemes.
+- For brief, general questions about a scheme ("What is PM Kisan?") you may answer directly without handing off.
+- Before transferring, always say something like: "I'll connect you to our Government Scheme Specialist who can give you a detailed answer on that."
+
 LANGUAGE (mirror the caller — highest priority)
 - ENGLISH: reply fully in English, no Devanagari. Keep scheme names in English spelling ("PM Kisan Samman Nidhi").
 - HINDI: reply fully in Hindi/Devanagari, including schemes (पीएम किसान सम्मान निधि, प्रधानमंत्री जन धन योजना, पीएम स्वनिधि, आधार).
@@ -95,6 +105,38 @@ SAFETY, ESCALATION & HUMAN HELP (CRITICAL FOR DAY 7)
 - If they say YES, call the create_escalation() tool. Once it succeeds and returns a reference ID (e.g. ESC-XXXXXX), give the caller the reference ID, explain that a human will contact them within 24 hours, and advise on next steps (e.g., call their bank to block cards immediately if fraud).
 - If they say NO, explain that you cannot escalate or share details without their consent, and ask how they would like to proceed.
 - Keep replies brief and conversational (1-3 short sentences). No markdown, emojis, or formatting."""
+
+
+# ---------------------------------------------------------------------------
+# Day 9 — Government Scheme Specialist Agent
+# ---------------------------------------------------------------------------
+SCHEME_SPECIALIST_PROMPT = """You are the RupeeGPT Government Scheme Specialist.
+You have just been handed this conversation by the main RupeeGPT assistant.
+
+YOUR INTRODUCTION (say this ONCE when you first take over)
+Say something like: "Hi, I'm the RupeeGPT Government Scheme Specialist. I'm here to help you with detailed information about Indian government welfare schemes — eligibility, application steps, documents, and more. Let me look into that for you."
+
+YOUR SOLE JOB
+- Help the caller with Indian government welfare schemes and subsidies.
+- Tasks you cover: checking eligibility for schemes, explaining application steps in detail, listing required documents, explaining scheme benefits and amounts, guiding through online/offline application portals, and answering follow-up questions about specific schemes.
+- Schemes you specialize in include (but are not limited to): PM Kisan Samman Nidhi, PM Jan Dhan Yojana, Pradhan Mantri Awas Yojana (PMAY), PM SVANidhi, PM Mudra Yojana, Sukanya Samriddhi Yojana, Atal Pension Yojana, PM Jeevan Jyoti Bima Yojana, PM Suraksha Bima Yojana, National Scholarship Portal schemes, and state-level welfare schemes.
+- Use the find_eligible_schemes tool to get a personalized list of schemes that match the caller's profile. Collect missing profile fields (state, age, income, occupation) conversationally before calling the tool.
+
+SCOPE LIMITS
+- Do NOT answer general banking, UPI, loans, or investment questions — those belong to the main RupeeGPT assistant.
+- If the caller asks something outside your scope, say: "That's a great question, but it's a bit outside my specialization in government schemes. The main RupeeGPT assistant would be better placed to help you with that."
+- Never guarantee official eligibility, approval, or disbursement outcomes. Always direct the caller to verify on official portals (myscheme.gov.in, umang.gov.in) before applying.
+- Never store, request, or repeat sensitive data (Aadhaar, PAN, bank account numbers, OTPs, PINs).
+
+SCHEME DATA DISCLAIMER (once per conversation)
+- On the FIRST scheme lookup result, briefly mention: the data is from a public dataset collected on the date shown in the tool result, it is not live, and the caller should verify on the official scheme page before applying.
+- Do NOT repeat the disclaimer on subsequent lookups.
+
+LANGUAGE (mirror the caller — highest priority)
+- ENGLISH: reply fully in English.
+- HINDI: reply fully in Hindi/Devanagari.
+- HINGLISH: reply in Roman-script Hinglish, but write all scheme names and Hindi terms in Devanagari.
+- Keep replies brief and conversational (1-3 sentences per turn). No markdown, bullet points, or formatting in voice responses."""
 
 
 # ---------- Tool schemas ----------
@@ -152,6 +194,125 @@ def _pick_arg(raw: dict[str, object] | None, key: str, direct: object) -> object
     return direct
 
 
+# ---------------------------------------------------------------------------
+# Day 9 — Government Scheme Specialist Agent class
+# ---------------------------------------------------------------------------
+class GovernmentSchemeSpecialist(Agent):
+    """Focused specialist agent for Indian government welfare schemes.
+
+    Instantiated by the main Assistant's transfer_to_scheme_specialist tool.
+    Receives the live chat_ctx so it can continue the conversation seamlessly.
+    """
+
+    def __init__(self, chat_ctx: llm.ChatContext | None = None) -> None:
+        kwargs: dict = {"instructions": SCHEME_SPECIALIST_PROMPT}
+        if chat_ctx is not None:
+            kwargs["chat_ctx"] = chat_ctx
+        super().__init__(**kwargs)
+        self._user_language: tts_hindi.Language = "english"
+        self._disclaimer_given: bool = False
+
+    async def on_user_turn_completed(
+        self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
+    ) -> None:
+        text = (new_message.text_content if new_message else None) or ""
+        self._user_language = tts_hindi.detect_language(text)
+
+    async def tts_node(self, text, model_settings):
+        """Reuse the same TTS rewriting logic as the main Assistant."""
+        language = self._tts_language()
+
+        async def _tracked():
+            async for part in tts_hindi.stream_for_tts(text, language=language):
+                yield part
+
+        async for frame in Agent.default.tts_node(self, _tracked(), model_settings):
+            yield frame
+
+    def _tts_language(self) -> str:
+        lang = getattr(self, "_user_language", "english") or "english"
+        return lang if lang in ("hindi", "hinglish") else "english"
+
+    @function_tool(
+        raw_schema={
+            "name": "find_eligible_schemes",
+            "description": (
+                "Check which Indian government schemes a caller may be eligible "
+                "for by matching their profile against a local public dataset of "
+                "Indian government schemes. Call this when the caller wants to "
+                "know which schemes they qualify for based on their profile. "
+                "Pass only facts the caller actually shared: age (years), "
+                "state (e.g. 'Delhi'), annual_income (rupees), gender "
+                "('male'/'female'), occupation, student (true/false), "
+                "caste ('SC'/'ST'/'OBC'/'General'), residence ('rural'/'urban'), "
+                "disability (true/false), bpl (true/false). "
+                "Ask for missing key fields (state, age, income) conversationally "
+                "before calling. Never fabricate or guess a field."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [],
+                "properties": {
+                    "age": {"type": "integer", "description": "Age in years."},
+                    "state": {"type": "string", "description": "State name, e.g. 'Delhi'."},
+                    "annual_income": {"type": "integer", "description": "Annual family income in rupees."},
+                    "gender": {"type": "string", "enum": ["male", "female"]},
+                    "occupation": {"type": "string", "description": "Occupation, e.g. 'farmer', 'student'."},
+                    "student": {"type": "boolean"},
+                    "caste": {"type": "string", "enum": ["SC", "ST", "OBC", "General"]},
+                    "residence": {"type": "string", "enum": ["rural", "urban"]},
+                    "disability": {"type": "boolean"},
+                    "bpl": {"type": "boolean"},
+                },
+            },
+        }
+    )
+    async def find_eligible_schemes(
+        self,
+        context: RunContext,
+        raw_arguments: dict[str, object] | None = None,
+        age: object | None = None,
+        state: object | None = None,
+        annual_income: object | None = None,
+        gender: object | None = None,
+        occupation: object | None = None,
+        student: object | None = None,
+        caste: object | None = None,
+        residence: object | None = None,
+        disability: object | None = None,
+        bpl: object | None = None,
+    ) -> str:
+        """Find government schemes matching the caller's profile."""
+        age = _pick_arg(raw_arguments, "age", age)
+        state = _pick_arg(raw_arguments, "state", state)
+        annual_income = _pick_arg(raw_arguments, "annual_income", annual_income)
+        gender = _pick_arg(raw_arguments, "gender", gender)
+        occupation = _pick_arg(raw_arguments, "occupation", occupation)
+        student = _pick_arg(raw_arguments, "student", student)
+        caste = _pick_arg(raw_arguments, "caste", caste)
+        residence = _pick_arg(raw_arguments, "residence", residence)
+        disability = _pick_arg(raw_arguments, "disability", disability)
+        bpl = _pick_arg(raw_arguments, "bpl", bpl)
+
+        result = schemes.find_eligible_schemes(
+            age=age,
+            state=state,
+            annual_income=annual_income,
+            gender=gender,
+            occupation=occupation,
+            student=student,
+            caste=caste,
+            residence=residence,
+            disability=disability,
+            bpl=bpl,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Main Assistant class
+# ---------------------------------------------------------------------------
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
@@ -909,6 +1070,57 @@ class Assistant(Agent):
             data["success_reason"] = f"Created human escalation: {ref_id}"
 
         return json.dumps({"status": "success", "reference_id": ref_id})
+
+    # -----------------------------------------------------------------------
+    # Day 9 — Handoff tool: transfer to Government Scheme Specialist
+    # -----------------------------------------------------------------------
+    @function_tool(
+        raw_schema={
+            "name": "transfer_to_scheme_specialist",
+            "description": (
+                "Transfer the caller to the RupeeGPT Government Scheme Specialist. "
+                "Use this tool when the caller needs deep, focused help with Indian "
+                "government welfare schemes — such as detailed eligibility checks, "
+                "step-by-step application guidance, required documents for a specific "
+                "scheme, or in-depth questions about PM Kisan, Jan Dhan, PMAY, "
+                "PM SVANidhi, Mudra Yojana, or similar schemes. "
+                "Do NOT use this for brief, general questions (e.g. 'What is PM Kisan?') "
+                "which you can answer directly. "
+                "Before calling this tool, always say something like: "
+                "'I will connect you to our Government Scheme Specialist who can "
+                "give you expert guidance on that.' "
+                "This tool hands the live conversation to the specialist; the caller "
+                "will not need to repeat themselves."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [],
+                "properties": {},
+            },
+        }
+    )
+    async def transfer_to_scheme_specialist(
+        self,
+        context: RunContext,
+        raw_arguments: dict[str, object] | None = None,
+    ) -> str:
+        """Hand the live session to the GovernmentSchemeSpecialist agent.
+
+        Passes the current chat context so the specialist can continue
+        seamlessly without asking the caller to repeat anything.
+        """
+        logger.info("[HANDOFF] Transferring to GovernmentSchemeSpecialist")
+        try:
+            specialist = GovernmentSchemeSpecialist(
+                chat_ctx=context.session.history.copy()
+            )
+            context.session.update_agent(specialist)
+            logger.info("[HANDOFF] session.update_agent() called — specialist is live")
+        except Exception as exc:
+            logger.error("[HANDOFF] Failed to update agent: %r", exc)
+            return "Handoff failed. Please try again."
+        return "Handoff complete. The Government Scheme Specialist has taken over."
 
 
 server = AgentServer()
